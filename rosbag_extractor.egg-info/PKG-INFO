@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: rosbag-extractor
+Version: 0.1.0
+Summary: Extract ROS bags to KITTI format with optional apairo preprocessing
+Requires-Python: >=3.11
+Requires-Dist: rosbags>=0.9.0
+Requires-Dist: numpy
+Requires-Dist: PyYAML
+Requires-Dist: questionary>=2.0.0
+Requires-Dist: rich>=13.0.0
+Requires-Dist: apairo
+Provides-Extra: mnt
+Requires-Dist: zarr>=2.0; extra == "mnt"
+Requires-Dist: Pillow; extra == "mnt"
