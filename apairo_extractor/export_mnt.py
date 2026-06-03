@@ -27,7 +27,7 @@ from apairo import WRITERS, MNTDataset
 from apairo.dataset.mnt.dataset import RAW_CHANNEL_PATHS
 
 if TYPE_CHECKING:
-    from rosbag_extractor.bag import BagInfo
+    from apairo_extractor.bag import BagInfo
 
 
 @dataclass
@@ -67,7 +67,7 @@ def extract_bag_to_mnt(
     """
     from rosbags.rosbag1 import Reader
     from rosbags.typesys import Stores, get_typestore
-    from rosbag_extractor.converters import convert_message
+    from apairo_extractor.converters import convert_message
 
     typestore = get_typestore(Stores.ROS1_NOETIC)
     mission_dir.mkdir(parents=True, exist_ok=True)

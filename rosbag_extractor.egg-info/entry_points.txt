@@ -1,2 +1,0 @@
-[console_scripts]
-rosbag-extract = rosbag_extractor.cli:main

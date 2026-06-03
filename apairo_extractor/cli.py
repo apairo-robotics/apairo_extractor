@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Rosbag → KITTI extractor with optional apairo preprocessing.
+"""Rosbag → KITTI/ZARR extractor with optional apairo preprocessing.
 
 Usage:
-  rosbag-extract           # interactive TUI
+  apairo-extract           # interactive TUI
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich import box
 from rich.text import Text
 
-from rosbag_extractor.bag import (
+from apairo_extractor.bag import (
     BagInfo,
     read_bag_info,
     find_bags,
@@ -29,9 +29,9 @@ from rosbag_extractor.bag import (
     get_topic_info,
     topics_in_bag,
 )
-from rosbag_extractor.extract import extract_bag
-from rosbag_extractor.export_mnt import MntExportConfig, export_to_mnt, extract_bag_to_mnt
-from rosbag_extractor.preprocess import (
+from apairo_extractor.extract import extract_bag
+from apairo_extractor.export_mnt import MntExportConfig, export_to_mnt, extract_bag_to_mnt
+from apairo_extractor.preprocess import (
     PreprocessConfig,
     discover_preprocessors,
     run_preprocessors,
@@ -51,11 +51,16 @@ TUI_STYLE = Style([
 ])
 
 BANNER = """\
- ╦═╗╔═╗╔═╗╔╗ ╔═╗╔═╗  ╔═╗═╗ ╦╔╦╗╦═╗╔═╗╔═╗╔╦╗╔═╗╦═╗
- ╠╦╝║ ║╚═╗╠╩╗╠═╣║ ╦  ║╣ ╔╩╦╝ ║ ╠╦╝╠═╣║   ║ ║ ║╠╦╝
- ╩╚═╚═╝╚═╝╚═╝╩ ╩╚═╝  ╚═╝╩ ╚═ ╩ ╩╚═╩ ╩╚═╝ ╩ ╚═╝╩╚═  → KITTI"""
+    _    ____   _    ___ ____   ___
+   / \\  |  _ \\ / \\  |_ _|  _ \\ / _ \\
+  / _ \\ | |_) / _ \\  | || |_) | | | |
+ / ___ \\|  __/ ___ \\ | ||  _ <| |_| |
+/_/   \\_\\_| /_/   \\_\\___|_| \\_\\\\___/
 
+             E X T R A C T
 
+          → KITTI • ZARR
+"""
 # ── Display helpers ────────────────────────────────────────────────────────────
 
 

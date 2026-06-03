@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rosbag-extractor"
+name = "apairo-extractor"
 version = "0.1.0"
 description = "Extract ROS bags to KITTI format with optional apairo preprocessing"
 requires-python = ">=3.11"
@@ -13,15 +13,16 @@ dependencies = [
     "PyYAML",
     "questionary>=2.0.0",
     "rich>=13.0.0",
-    "apairo",
+    
+    "apairo @ git+https://github.com/apairo-robotics/apairo.git",
 ]
 
 [project.optional-dependencies]
 mnt = ["zarr>=2.0", "Pillow"]
 
 [project.scripts]
-rosbag-extract = "rosbag_extractor.cli:main"
+apairo-extract = "apairo_extractor.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["rosbag_extractor*"]
+include = ["apairo_extractor*"]

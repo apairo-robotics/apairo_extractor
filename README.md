@@ -1,6 +1,32 @@
-# Rosbag Extractor
+# Apairo Extractor
 
-Extract a rosbag to the Kitti format :
+Using [apairo](../apairo), extract a rosbag to Kitti or Zarr(WIP) format.
+
+
+## Quickstart
+
+By typing apairo-extract, 
+```
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│      _    ____   _    ___ ____   ___                                                                                                                                                 │
+│     / \  |  _ \ / \  |_ _|  _ \ / _ \                                                                                                                                                │
+│    / _ \ | |_) / _ \  | || |_) | | | |                                                                                                                                               │
+│   / ___ \|  __/ ___ \ | ||  _ <| |_| |                                                                                                                                               │
+│  /_/   \_\_| /_/   \_\___|_| \_\\___/                                                                                                                                                │
+│                                                                                                                                                                                      │
+│               E X T R A C T                                                                                                                                                          │
+│                                                                                                                                                                                      │
+│            → KITTI • ZARR                                                                                                                                                            │
+│                                                                                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+? Directory containing rosbags:
+
+```
+
+### Data Management
+
+You indicate the root directory of your rosbags
 
 ```sh
 /input/path/
@@ -10,6 +36,9 @@ Extract a rosbag to the Kitti format :
 └────── ...
 ``` 
 
+It will extract it with the options indicated.
+
+Here it is in `Kitti` format with `cmd` and `ouster`.
 ```
 output/path/
 ├── <sequence_name>/             # e.g. yvette-mountain-020606
@@ -26,7 +55,6 @@ output/path/
 │       └── timestamps.txt
 └── output_datasets/
 ```
-
 
 ## CLI
 

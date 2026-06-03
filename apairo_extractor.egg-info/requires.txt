@@ -3,7 +3,7 @@ numpy
 PyYAML
 questionary>=2.0.0
 rich>=13.0.0
-apairo
+apairo @ git+https://github.com/apairo-robotics/apairo.git
 
 [mnt]
 zarr>=2.0

@@ -7,8 +7,8 @@ import numpy as np
 
 from apairo.core.config import register_raw_channel
 
-from rosbag_extractor.bag import BagInfo, topic_to_dir, topics_in_bag
-from rosbag_extractor.converters import (
+from apairo_extractor.bag import BagInfo, topic_to_dir, topics_in_bag
+from apairo_extractor.converters import (
     convert_message,
     is_frame_type,
     pointcloud2_field_names,
