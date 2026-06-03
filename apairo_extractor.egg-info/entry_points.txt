@@ -1,2 +1,0 @@
-[console_scripts]
-apairo-extract = apairo_extractor.cli:main
