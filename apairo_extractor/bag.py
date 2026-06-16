@@ -59,15 +59,30 @@ def _time_ns(b: bytes) -> int:
     return secs * 1_000_000_000 + nsecs
 
 
-def read_bag_info(path: Path) -> BagInfo:
-    """Read bag metadata by parsing only the index section.
+def is_ros1_bag(path: Path) -> bool:
+    """A ROS1 bag is a single ``*.bag`` file; a ROS2 bag is a directory."""
+    return path.is_file() and path.suffix == '.bag'
 
-    Reads connections and chunk_infos from the index at the end of the bag.
-    Does NOT seek into chunk data, so performance is O(n_topics + n_chunks),
-    not O(n_messages). Falls back to rosbags Reader on parsing errors.
+
+def read_bag_info(path: Path) -> BagInfo:
+    """Read bag metadata, dispatching on bag format.
+
+    ROS1 ``*.bag`` files use a fast index-only parser: connections and
+    chunk_infos are read from the index at the end of the file, without seeking
+    into chunk data, so performance is O(n_topics + n_chunks), not
+    O(n_messages). On any parsing error it falls back to the generic reader.
+
+    ROS2 bags (directories) and the fallback both use ``AnyReader``, whose
+    metadata (per-connection message counts, duration) is itself cheap — it
+    comes from the bag's own ``metadata.yaml`` / index, not a message scan.
     """
+    if is_ros1_bag(path):
+        try:
+            return _fast_read(path)
+        except Exception:
+            pass  # fall through to the generic reader
     try:
-        return _fast_read(path)
+        return _reader_read(path)
     except Exception as exc:
         raise ValueError(f'Could not read bag metadata: {exc}') from exc
 
@@ -144,11 +159,60 @@ def _fast_read(path: Path) -> BagInfo:
     )
 
 
+# ── Generic reader (ROS2 + ROS1 fallback) ───────────────────────────────────────
+
+
+def _path_size(path: Path) -> int:
+    """Byte size of a bag: file size for ROS1, sum of files for a ROS2 dir."""
+    if path.is_file():
+        return path.stat().st_size
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+def _reader_read(path: Path) -> BagInfo:
+    """Read metadata via rosbags AnyReader (auto-detects ROS1/ROS2).
+
+    Connection message counts and duration come from the bag index / metadata,
+    so this does not scan messages.
+    """
+    from rosbags.highlevel import AnyReader
+
+    topic_counts: dict[str, int]   = {}
+    topic_msgtypes: dict[str, str] = {}
+    with AnyReader([path]) as reader:
+        for conn in reader.connections:
+            topic_counts[conn.topic]   = topic_counts.get(conn.topic, 0) + conn.msgcount
+            topic_msgtypes[conn.topic] = conn.msgtype
+        duration_s = max(0.0, reader.duration / 1e9) if topic_counts else 0.0
+
+    topics = sorted(
+        [TopicInfo(t, topic_msgtypes[t], topic_counts[t]) for t in topic_counts],
+        key=lambda t: t.name,
+    )
+    return BagInfo(
+        path=path, size_bytes=_path_size(path),
+        duration_s=duration_s, message_count=sum(topic_counts.values()),
+        topics=topics,
+    )
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
 def find_bags(directory: Path) -> list[Path]:
-    return sorted(directory.rglob("*.bag"))
+    """Find ROS1 (``*.bag`` files) and ROS2 (directories) bags under ``directory``.
+
+    A ROS2 bag is identified by a ``metadata.yaml`` alongside a storage file
+    (``*.db3`` or ``*.mcap``); the storage-file check avoids matching the
+    ``metadata.yaml`` this tool writes into its own output sequence dirs.
+    """
+    ros1 = list(directory.rglob("*.bag"))
+    ros2 = [
+        meta.parent
+        for meta in directory.rglob("metadata.yaml")
+        if any(meta.parent.glob("*.db3")) or any(meta.parent.glob("*.mcap"))
+    ]
+    return sorted(set(ros1 + ros2))
 
 
 def topic_to_dir(topic: str) -> str:

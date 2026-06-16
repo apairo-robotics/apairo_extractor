@@ -11,6 +11,22 @@ FRAME_MSGTYPES: frozenset[str] = frozenset({
     "PointCloud",
 })
 
+# Message types stored as a single stacked .npy (one row per message).
+# Keep in sync with the branches in convert_message().
+SEQ_MSGTYPES: frozenset[str] = frozenset({
+    "Imu",
+    "Twist",
+    "TwistStamped",
+    "TwistWithCovarianceStamped",
+    "Odometry",
+    "NavSatFix",
+    "PoseStamped",
+    "WrenchStamped",
+})
+
+# Everything convert_message() can handle.
+SUPPORTED_MSGTYPES: frozenset[str] = FRAME_MSGTYPES | SEQ_MSGTYPES
+
 # PointCloud2 datatype enum → numpy dtype
 _PC2_DTYPE: dict[int, type] = {
     1: np.int8,
@@ -31,6 +47,11 @@ def msgtype_short(msgtype: str) -> str:
 
 def is_frame_type(msgtype: str) -> bool:
     return msgtype_short(msgtype) in FRAME_MSGTYPES
+
+
+def is_supported_msgtype(msgtype: str) -> bool:
+    """Whether convert_message() can turn this message type into an array."""
+    return msgtype_short(msgtype) in SUPPORTED_MSGTYPES
 
 
 def convert_message(msg, msgtype: str) -> np.ndarray | None:

@@ -33,16 +33,10 @@ def extract_bag(
     Returns:
         (seq_dir, skipped_topics) where skipped_topics were missing or unsupported.
     """
-    from rosbags.rosbag1 import Reader
-    from rosbags.typesys import Stores, get_typestore
-
-    typestore = get_typestore(Stores.ROS1_NOETIC)
+    from rosbags.highlevel import AnyReader
 
     seq_dir = output_dir / bag_info.path.stem
     seq_dir.mkdir(parents=True, exist_ok=True)
-
-    # Register channels written in previous extraction sessions.
-    _register_existing_channels(seq_dir)
 
     bag_topic_names = topics_in_bag(bag_info)
     available = [t for t in topics if t in bag_topic_names]
@@ -50,14 +44,21 @@ def extract_bag(
 
     total = sum(t.msgcount for t in bag_info.topics if t.name in set(available))
 
-    # Accumulators per topic
-    frame_data: dict[str, list[tuple[int, np.ndarray]]] = {t: [] for t in available}
+    # Streaming state. Frame topics (point clouds, images, …) are the memory
+    # hog, so each message is written to its own .npy as it arrives and only
+    # lightweight bookkeeping (per-topic frame count + timestamps) is held in
+    # RAM — keeping memory bounded regardless of bag size. Sequence topics
+    # produce tiny fixed-length vectors, so they are buffered and stacked once
+    # at the end (their footprint is ∝ message count, not data volume, and
+    # np.stack needs the whole array anyway).
+    frame_counts: dict[str, int] = {}
+    frame_timestamps: dict[str, list[float]] = {}
     seq_data: dict[str, list[tuple[int, np.ndarray]]] = {}
     msgtypes: dict[str, str] = {}
     pc2_fields: dict[str, list[str]] = {}
     done = 0
 
-    with Reader(bag_info.path) as reader:
+    with AnyReader([bag_info.path]) as reader:
         topic_conns: dict[str, list] = {}
         for conn in reader.connections:
             if conn.topic in available:
@@ -70,7 +71,7 @@ def extract_bag(
         for conn, timestamp_ns, rawdata in reader.messages(connections=all_conns):
             topic = conn.topic
             try:
-                msg = typestore.deserialize_ros1(rawdata, conn.msgtype)
+                msg = reader.deserialize(rawdata, conn.msgtype)
             except Exception:
                 done += 1
                 if progress_cb and done % 50 == 0:
@@ -80,7 +81,13 @@ def extract_bag(
             arr = convert_message(msg, conn.msgtype)
             if arr is not None:
                 if is_frame_type(conn.msgtype):
-                    frame_data[topic].append((timestamp_ns, arr))
+                    channel_dir = seq_dir / topic_to_dir(topic)
+                    if topic not in frame_counts:
+                        channel_dir.mkdir(exist_ok=True)
+                    idx = frame_counts.get(topic, 0)
+                    np.save(channel_dir / f"{idx:06d}.npy", arr)
+                    frame_counts[topic] = idx + 1
+                    frame_timestamps.setdefault(topic, []).append(timestamp_ns / 1e9)
                     if msgtype_short(conn.msgtype) == "PointCloud2" and topic not in pc2_fields:
                         pc2_fields[topic] = pointcloud2_field_names(msg)
                 else:
@@ -93,7 +100,9 @@ def extract_bag(
     if progress_cb:
         progress_cb(total, total)
 
-    # ── Write to disk ────────────────────────────────────────────────────────
+    # ── Finalize on-disk channels ────────────────────────────────────────────
+    # Frame .npy files are already written; here we only flush their sidecar
+    # files (timestamps, metadata) and stack/write the buffered seq topics.
     skipped: list[str] = list(missing)
 
     for topic in available:
@@ -101,16 +110,12 @@ def extract_bag(
         msgtype = msgtypes.get(topic, "unknown")
         channel_dir = seq_dir / dir_name
 
-        if topic in frame_data and frame_data[topic]:
-            channel_dir.mkdir(exist_ok=True)
-            frames = frame_data[topic]
-            timestamps = np.array([ts / 1e9 for ts, _ in frames])
-            for i, (_, arr) in enumerate(frames):
-                np.save(channel_dir / f"{i:06d}.npy", arr)
+        if frame_counts.get(topic, 0) > 0:
+            timestamps = np.array(frame_timestamps[topic])
             np.savetxt(channel_dir / "timestamps.txt", timestamps)
             _write_channel_metadata(
                 channel_dir, topic, msgtype,
-                len(frames), pc2_fields.get(topic),
+                frame_counts[topic], pc2_fields.get(topic),
             )
             register_raw_channel(seq_dir, dir_name, "npys")
 
@@ -130,28 +135,6 @@ def extract_bag(
     _write_sequence_metadata(seq_dir, bag_info)
 
     return seq_dir, skipped
-
-
-def _register_existing_channels(seq_dir: Path) -> None:
-    """Register channel dirs already on disk that are absent from .apairo.
-
-    Called at the start of extraction to pick up channels written in a
-    previous session before the new pass adds its own.
-    """
-    from apairo.core.config import config_exists, read_config
-
-    known: set[str] = set()
-    if config_exists(seq_dir):
-        known = set(read_config(seq_dir).get("channels", {}).keys())
-
-    for d in sorted(seq_dir.iterdir()):
-        if not d.is_dir() or d.name.startswith(".") or d.name in known:
-            continue
-        npys = sorted(d.glob("*.npy"))
-        if not npys:
-            continue
-        loader = "npy" if len(npys) == 1 and npys[0].stem == d.name else "npys"
-        register_raw_channel(seq_dir, d.name, loader)
 
 
 def _write_channel_metadata(

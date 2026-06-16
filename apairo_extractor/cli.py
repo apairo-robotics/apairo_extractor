@@ -2,14 +2,18 @@
 """Rosbag → KITTI/ZARR extractor with optional apairo preprocessing.
 
 Usage:
-  apairo-extract           # interactive TUI
+  apairo-extractor                                   # interactive TUI
+  apairo-extractor --input DIR --list               # discover bags/topics
+  apairo-extractor -i DIR -t /lidar /imu -o OUT      # headless extraction
+  apairo-extractor -i DIR -t /lidar -o OUT -w 4      # … with 4 parallel workers
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 import questionary
 from questionary import Style
@@ -29,12 +33,17 @@ from apairo_extractor.bag import (
     get_topic_info,
     topics_in_bag,
 )
-from apairo_extractor.extract import extract_bag
-from apairo_extractor.export_mnt import MntExportConfig, export_to_mnt, extract_bag_to_mnt
-from apairo_extractor.preprocess import (
-    PreprocessConfig,
-    discover_preprocessors,
-    run_preprocessors,
+from apairo_extractor.export_mnt import MntExportConfig
+from apairo_extractor.preprocess import PreprocessConfig, discover_preprocessors
+from apairo_extractor.runner import resolve_workers, run_extraction
+from apairo_extractor.resources import (
+    SystemResources,
+    estimate_output_mb,
+    estimate_worker_ram_mb,
+    projected_ram_mb,
+    read_resources,
+    recommend_workers,
+    worker_fit,
 )
 
 console = Console()
@@ -185,6 +194,84 @@ def _summary_panel(
     return Panel(t, title="[bold]Extraction summary[/bold]", border_style="yellow", padding=(0, 1))
 
 
+# ── Resource estimation ───────────────────────────────────────────────────────
+
+
+def _fmt_gb(mb: int) -> str:
+    return f"{mb / 1024:.1f} GB"
+
+
+_FIT_STYLE = {"ok": ("green", "✓"), "warn": ("yellow", "⚠"), "bad": ("red", "✗")}
+
+
+def _worker_choices(res: SystemResources, n_bags: int, recommended: int) -> list[int]:
+    """Candidate worker counts: 1, 2, 4, recommended, and the practical max."""
+    cands = {1, 2, 4, recommended, min(res.cpu_count, max(1, n_bags))}
+    return sorted(c for c in cands if 1 <= c <= max(1, n_bags))
+
+
+def _resources_panel(
+    res: SystemResources, n_bags: int, input_mb: int, output_mb: int,
+    recommended: int, per_worker_mb: int,
+) -> Panel:
+    """Show what the machine has, what's in use, and the cost of N workers."""
+    sys_t = Table(box=None, show_header=False, padding=(0, 2))
+    sys_t.add_column("k", style="bold dim", no_wrap=True)
+    sys_t.add_column("v", style="white")
+    sys_t.add_row("CPU", f"{res.cpu_count} cores · load {res.load_avg_1m:.2f}")
+    sys_t.add_row(
+        "RAM",
+        f"{_fmt_gb(res.ram_available_mb)} free / {_fmt_gb(res.ram_total_mb)} "
+        f"([{'red' if res.ram_used_pct > 85 else 'dim'}]{res.ram_used_pct:.0f}% used[/])",
+    )
+    disk_low = res.disk_free_mb and res.disk_free_mb < output_mb
+    disk_tag = {"HDD": " [yellow]· HDD (rotational)[/yellow]",
+                "SSD/NVMe": " [dim]· SSD/NVMe[/dim]"}.get(res.disk_kind, "")
+    sys_t.add_row(
+        "Disk (output)",
+        f"[{'red' if disk_low else 'white'}]{_fmt_gb(res.disk_free_mb)} free[/] "
+        f"/ {_fmt_gb(res.disk_total_mb)}{disk_tag}",
+    )
+    sys_t.add_row("Input selected", f"{_fmt_gb(input_mb)} across {n_bags} bag(s)")
+    sys_t.add_row(
+        "Est. output",
+        f"[{'red' if disk_low else 'white'}]~{_fmt_gb(output_mb)}[/] (selected channels)",
+    )
+    sys_t.add_row("RAM / worker", f"~{_fmt_gb(per_worker_mb)} (est.)")
+
+    cmp_t = Table(box=box.SIMPLE_HEAD, border_style="dim", header_style="bold cyan",
+                  show_edge=False, padding=(0, 2))
+    cmp_t.add_column("Workers", justify="right")
+    cmp_t.add_column("CPU use")
+    cmp_t.add_column("RAM (est.)", justify="right")
+    cmp_t.add_column("Fit")
+    for w in _worker_choices(res, n_bags, recommended):
+        kind, note = worker_fit(w, res, per_worker_mb)
+        colour, sym = _FIT_STYLE[kind]
+        tag = "  ← recommended" if w == recommended else ""
+        label = f"{w}{tag}"
+        fit = f"[{colour}]{sym}[/]" + (f" [dim]{note}[/dim]" if note else "")
+        cmp_t.add_row(
+            label,
+            f"{w}/{res.cpu_count} cores",
+            _fmt_gb(projected_ram_mb(w, per_worker_mb)),
+            fit,
+        )
+
+    body = Table.grid(padding=(1, 0))
+    body.add_row(sys_t)
+    body.add_row(cmp_t)
+    if res.disk_kind == "HDD":
+        body.add_row(
+            "[yellow]Rotational disk: parallel writes thrash the head — "
+            f"keeping ≤{recommended} worker(s) recommended.[/yellow]"
+        )
+    if n_bags <= 1:
+        body.add_row("[dim]Only one bag selected — parallelism across bags does not apply.[/dim]")
+    return Panel(body, title="[bold]Resources & parallelism[/bold]",
+                 border_style="cyan", padding=(0, 1))
+
+
 # ── Preprocessor configuration wizard ─────────────────────────────────────────
 
 
@@ -227,17 +314,7 @@ def _configure_preprocessor(
     return PreprocessConfig(cls=cls, output_key=out_key, key_map=key_map)
 
 
-# ── Extraction runner ──────────────────────────────────────────────────────────
-
-
-def _topic_for_channel(channel: str | None, topics: list[str]) -> str | None:
-    """Reverse-map a KITTI channel dir name to its original ROS topic name."""
-    if channel is None:
-        return None
-    for t in topics:
-        if topic_to_dir(t) == channel:
-            return t
-    return None
+# ── Extraction runner (rich frontend over runner.run_extraction) ──────────────
 
 
 def _run_extraction(
@@ -246,18 +323,10 @@ def _run_extraction(
     preprocess_configs: list[PreprocessConfig],
     output_dir: Optional[Path],
     mnt_config: Optional[MntExportConfig] = None,
+    workers: Optional[int] = None,
 ) -> None:
+    """Run an extraction with a live rich progress display (the TUI/CLI front)."""
     mnt_only = output_dir is None
-    if not mnt_only:
-        output_dir.mkdir(parents=True, exist_ok=True)
-    if mnt_config is not None:
-        mnt_config.output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Pre-resolve topic names for direct MNT extraction.
-    mnt_points_topic  = _topic_for_channel(mnt_config.points_channel,   topics) if mnt_config else None
-    mnt_image_topic   = _topic_for_channel(mnt_config.image_channel,    topics) if mnt_config else None
-    mnt_odom_topic    = _topic_for_channel(mnt_config.odometry_channel,  topics) if mnt_config else None
-
     all_skipped: list[tuple[str, str]] = []
 
     with Progress(
@@ -270,67 +339,37 @@ def _run_extraction(
     ) as progress:
         overall = progress.add_task("[cyan]Overall", total=len(bags))
 
-        for bag in bags:
-            mission_dir = mnt_config.output_dir / bag.path.stem if mnt_config else None
+        # Per-bag bars are created lazily on first progress so we don't flood
+        # the display with idle bars when there are many bags.
+        bag_tasks: dict[str, int] = {}
 
-            if mnt_only:
-                # Direct bag → MNT, no intermediate KITTI files.
-                mnt_total = sum(t.msgcount for t in bag.topics if t.name in
-                                {mnt_points_topic, mnt_image_topic, mnt_odom_topic} - {None})
-                mnt_task = progress.add_task(
-                    f"[blue]{bag.path.stem[:33]}", total=max(mnt_total, 1)
-                )
+        def on_progress(bag_id, phase, done, total):
+            task = bag_tasks.get(bag_id)
+            if task is None:
+                task = progress.add_task(f"[green]{bag_id[:33]}", total=max(total, 1))
+                bag_tasks[bag_id] = task
+            progress.update(
+                task,
+                description=f"[green]{bag_id[:25]} · {phase}",
+                completed=done,
+                total=max(total, 1),
+            )
 
-                def _mnt_direct_cb(stage, done, total, _t=mnt_task):
-                    progress.update(_t, completed=done, total=max(total, 1))
-
-                extract_bag_to_mnt(
-                    bag, mission_dir,
-                    points_topic=mnt_points_topic,
-                    image_topic=mnt_image_topic,
-                    odometry_topic=mnt_odom_topic,
-                    max_points=mnt_config.max_points,
-                    progress_cb=_mnt_direct_cb,
-                )
-                progress.update(mnt_task, completed=max(mnt_total, 1))
-
-            else:
-                # KITTI extraction (+ optional MNT conversion from KITTI).
-                topic_total = sum(t.msgcount for t in bag.topics if t.name in set(topics))
-                bag_task = progress.add_task(
-                    f"[green]{bag.path.stem[:33]}", total=max(topic_total, 1)
-                )
-
-                def _cb(done, total, _t=bag_task):
-                    progress.update(_t, completed=done, total=max(total, 1))
-
-                seq_dir, skipped = extract_bag(bag, topics, output_dir, progress_cb=_cb)
-                progress.update(bag_task, completed=max(topic_total, 1))
-
-                for s in skipped:
-                    all_skipped.append((bag.path.name, s))
-
-                if preprocess_configs:
-                    pp_task = progress.add_task(
-                        f"[magenta]preprocess {bag.path.stem[:27]}", total=1
-                    )
-                    run_preprocessors(seq_dir, preprocess_configs)
-                    progress.update(pp_task, completed=1)
-
-                if mnt_config is not None:
-                    mnt_task = progress.add_task(
-                        f"[blue]MNT {bag.path.stem[:30]}", total=3
-                    )
-
-                    def _mnt_cb(stage, done, total, _t=mnt_task):
-                        progress.update(_t, description=f"[blue]MNT {stage:<10}", advance=0)
-                        if done >= total:
-                            progress.advance(_t, 1)
-
-                    export_to_mnt(seq_dir, mission_dir, mnt_config, progress_cb=_mnt_cb)
-                    progress.update(mnt_task, completed=3)
-
+        def on_bag_done(name, skipped, err):
+            if err:
+                console.print(f"[red]Error extracting {name}: {err}[/red]")
+            for s in skipped:
+                all_skipped.append((name, s))
             progress.advance(overall, 1)
+
+        run_extraction(
+            bags, topics, output_dir,
+            mnt_config=mnt_config,
+            preprocess_configs=preprocess_configs,
+            workers=workers,
+            on_progress=on_progress,
+            on_bag_done=on_bag_done,
+        )
 
     console.print()
     if not mnt_only:
@@ -367,6 +406,8 @@ def interactive() -> None:
     mnt_config:        Optional[MntExportConfig]  = None
     mnt_only:          bool                       = False
     output_dir:        Optional[Path]             = None
+    workers:           Optional[int]              = None
+    est_output_mb:     int                        = 0
     _found_preprocessors: dict[str, type]         = {}
 
     state = "INPUT_DIR"
@@ -673,7 +714,7 @@ def interactive() -> None:
                 odometry_channel=odom_ch if odom_ch != none_choice else None,
                 output_dir=Path(os.path.expanduser(raw_mnt)),
             )
-            state = "CONFIRM" if mnt_only else "OUTPUT_DIR"
+            state = "WORKERS" if mnt_only else "OUTPUT_DIR"
 
         # ── OUTPUT_DIR ────────────────────────────────────────────────────────
         elif state == "OUTPUT_DIR":
@@ -689,6 +730,72 @@ def interactive() -> None:
                 state = "MNT_CHOICE"
                 continue
             output_dir = Path(os.path.expanduser(raw))
+            state = "WORKERS"
+
+        # ── WORKERS ───────────────────────────────────────────────────────────
+        elif state == "WORKERS":
+            console.print()
+            n_bags = len(selected_bags)
+            res_target = output_dir if not mnt_only else (
+                mnt_config.output_dir if mnt_config else None
+            )
+            res = read_resources(res_target)
+            input_mb = sum(b.size_bytes for b in selected_bags) // (1024 * 1024)
+            per_worker_mb = estimate_worker_ram_mb(selected_bags, selected_topics)
+            recommended = recommend_workers(n_bags, res, per_worker_mb)
+            with console.status("[dim]Estimating output size…[/dim]"):
+                est_output_mb = estimate_output_mb(selected_bags, selected_topics)
+
+            console.print(_resources_panel(
+                res, n_bags, input_mb, est_output_mb, recommended, per_worker_mb))
+            console.print()
+
+            if n_bags <= 1:
+                # Nothing to parallelise across; skip the prompt.
+                workers = 1
+                state = "CONFIRM"
+                continue
+
+            candidates = _worker_choices(res, n_bags, recommended)
+            current = workers if workers in candidates else recommended
+            choices = []
+            for w in candidates:
+                kind, note = worker_fit(w, res, per_worker_mb)
+                _, sym = _FIT_STYLE[kind]
+                tag = "  (recommended)" if w == recommended else ""
+                suffix = f"  {sym} {note}" if note else f"  {sym}"
+                choices.append(questionary.Choice(
+                    f"{w} worker(s) · ~{_fmt_gb(projected_ram_mb(w, per_worker_mb))} RAM{tag}{suffix}",
+                    value=w,
+                    checked=(w == current),
+                ))
+            choices.append(questionary.Separator())
+            choices.append(questionary.Choice("Custom…", value="custom"))
+            choices.append(questionary.Choice("← Back", value="back"))
+
+            sel = questionary.select(
+                "Parallel workers  (bags extracted at once):",
+                choices=choices,
+                default=current,
+                style=TUI_STYLE,
+            ).ask()
+            if sel is None or sel == "back":
+                state = "OUTPUT_DIR" if not mnt_only else "MNT_CONFIG"
+                continue
+            if sel == "custom":
+                raw = questionary.text(
+                    f"Number of workers (1–{n_bags}):",
+                    default=str(recommended),
+                    style=TUI_STYLE,
+                ).ask()
+                if raw is None:
+                    continue  # stay in WORKERS
+                try:
+                    sel = max(1, min(int(raw), n_bags))
+                except ValueError:
+                    console.print("[red]Enter a whole number.[/red]\n")
+                    continue
+            workers = sel
             state = "CONFIRM"
 
         # ── CONFIRM ───────────────────────────────────────────────────────────
@@ -697,10 +804,16 @@ def interactive() -> None:
             console.print(_summary_panel(selected_bags, selected_topics, preprocess_configs, output_dir, mnt_config))
             console.print()
 
+            workers_label = (
+                f"✓  Start extraction  [{workers} worker(s)]"
+                if workers and len(selected_bags) > 1
+                else "✓  Start extraction"
+            )
             action = questionary.select(
                 "Ready?",
                 choices=[
-                    questionary.Choice("✓  Start extraction",             value="go"),
+                    questionary.Choice(workers_label,                     value="go"),
+                    questionary.Choice("←  Change parallel workers",      value="workers"),
                     questionary.Choice("←  Change output directory",      value="output"),
                     questionary.Choice("←  Change MNT export",            value="mnt"),
                     questionary.Choice("←  Change preprocessing",         value="preprocess"),
@@ -714,6 +827,8 @@ def interactive() -> None:
             if action is None or action == "cancel":
                 console.print("[dim]Cancelled.[/dim]")
                 return
+            elif action == "workers":
+                state = "WORKERS"
             elif action == "output":
                 state = "OUTPUT_DIR"
             elif action == "mnt":
@@ -725,16 +840,215 @@ def interactive() -> None:
             elif action == "bags":
                 state = "BAG_SELECT"
             else:
+                # Soft disk-space gate against the estimated output size for the
+                # selected channels (not the whole bag) — warn, but let the user
+                # proceed, when free space is below it.
+                out_target = output_dir if not mnt_only else (
+                    mnt_config.output_dir if mnt_config else None
+                )
+                res = read_resources(out_target)
+                if res.disk_free_mb and res.disk_free_mb < est_output_mb:
+                    console.print(
+                        f"[yellow]⚠ Only {_fmt_gb(res.disk_free_mb)} free on the output "
+                        f"disk for ~{_fmt_gb(est_output_mb)} of estimated output "
+                        f"(selected channels). It may not fit.[/yellow]"
+                    )
+                    proceed = questionary.confirm(
+                        "Continue anyway?", default=False, style=TUI_STYLE,
+                    ).ask()
+                    if not proceed:
+                        continue  # stay on CONFIRM
                 console.print()
-                _run_extraction(selected_bags, selected_topics, preprocess_configs, output_dir, mnt_config)
+                _run_extraction(selected_bags, selected_topics, preprocess_configs,
+                                output_dir, mnt_config, workers=workers)
                 return
+
+
+# ── Headless CLI ──────────────────────────────────────────────────────────────
+
+
+def _load_bags(input_dir: Path, names: Optional[list[str]]) -> list[BagInfo]:
+    """Discover and read bags under ``input_dir``, optionally filtered by name."""
+    paths = find_bags(input_dir)
+    if names:
+        wanted = set(names)
+        paths = [p for p in paths if p.name in wanted or p.stem in wanted]
+    bags: list[BagInfo] = []
+    for p in paths:
+        try:
+            bags.append(read_bag_info(p))
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Error reading {p.name}:[/red] {exc}")
+    return bags
+
+
+def _fail(msg: str) -> NoReturn:
+    """Print a usage error and exit with code 2 (consistent with argparse)."""
+    console.print(f"[red]{msg}[/red]")
+    raise SystemExit(2)
+
+
+def _parse_preprocess_spec(
+    spec: str, found: dict[str, type], channels: list[str]
+) -> PreprocessConfig:
+    """Build a PreprocessConfig from a CLI spec string.
+
+    SPEC = ``file.Class`` or ``file.Class:output=name,inputkey=channel,...``.
+    Unspecified input keys default to a channel of the same name. Raises
+    SystemExit with a helpful message on any error.
+    """
+    name, _, rest = spec.partition(":")
+    name = name.strip()
+    if name not in found:
+        avail = ", ".join(found) or "(none)"
+        _fail(f"Unknown preprocessor '{name}'. Available: {avail}")
+    cls = found[name]
+    output_key = getattr(cls, "output_key", cls.__name__.lower())
+    key_map = {k: k for k in getattr(cls, "input_keys", [])}
+
+    for pair in (p for p in rest.split(",") if p.strip()):
+        key, sep, val = pair.partition("=")
+        key, val = key.strip(), val.strip()
+        if not sep or not val:
+            _fail(f"Bad mapping '{pair}' in --preprocess '{spec}' (expected key=value)")
+        if key == "output":
+            output_key = val
+        else:
+            key_map[key] = val
+
+    for k, ch in key_map.items():
+        if channels and ch not in channels:
+            console.print(
+                f"[yellow]⚠ preprocessor '{name}': input '{k}' → channel '{ch}' "
+                f"is not among the extracted channels ({', '.join(channels)}).[/yellow]"
+            )
+    return PreprocessConfig(cls=cls, output_key=output_key, key_map=key_map)
+
+
+def _build_preprocess_configs(
+    args: argparse.Namespace, channels: list[str]
+) -> list[PreprocessConfig]:
+    """Resolve --preprocess specs against --preprocess-dir (headless)."""
+    if not args.preprocess:
+        return []
+    if not args.preprocess_dir:
+        _fail("--preprocess requires --preprocess-dir")
+    pp_dir = Path(os.path.expanduser(args.preprocess_dir))
+    if not pp_dir.is_dir():
+        _fail(f"--preprocess-dir is not a directory: {pp_dir}")
+    found = discover_preprocessors(pp_dir)
+    if not found:
+        _fail(f"No preprocessor classes found in {pp_dir}")
+    return [_parse_preprocess_spec(spec, found, channels) for spec in args.preprocess]
+
+
+def _run_headless(args: argparse.Namespace) -> int:
+    """Non-interactive extraction driven entirely by CLI flags."""
+    input_dir = Path(os.path.expanduser(args.input))
+    if not input_dir.is_dir():
+        console.print(f"[red]Not a directory:[/red] {input_dir}")
+        return 2
+
+    with console.status(f"[dim]Reading bags in {input_dir}…[/dim]"):
+        bags = _load_bags(input_dir, args.bags)
+    if not bags:
+        console.print("[red]No readable bags found.[/red]")
+        return 1
+
+    if args.list:
+        common, partial = compute_topic_coverage(bags)
+        console.print(_bags_table(bags))
+        console.print()
+        console.print(_topics_table(common + partial, bags, partial))
+        return 0
+
+    mnt_config = None
+    if args.mnt_output or args.points or args.image or args.odom:
+        mnt_config = MntExportConfig(
+            points_channel=args.points,
+            image_channel=args.image,
+            odometry_channel=args.odom,
+            output_dir=Path(os.path.expanduser(args.mnt_output)) if args.mnt_output
+            else Path.home() / "mnt_exported",
+        )
+    output_dir = Path(os.path.expanduser(args.output)) if args.output else None
+    mnt_only = output_dir is None and mnt_config is not None
+
+    if not args.topics:
+        console.print("[red]--topics is required (or use --list to discover them).[/red]")
+        return 2
+    if output_dir is None and mnt_config is None:
+        console.print("[red]Provide --output (KITTI) and/or --mnt-output (MNT).[/red]")
+        return 2
+
+    available = set().union(*(topics_in_bag(b) for b in bags))
+    unknown = [t for t in args.topics if t not in available]
+    if unknown:
+        console.print(f"[yellow]Topics not present in any bag (will be skipped):[/yellow] {', '.join(unknown)}")
+
+    channels = [topic_to_dir(t) for t in args.topics]
+    preprocess_configs = _build_preprocess_configs(args, channels)
+
+    # Soft disk-space warning against the estimated output for the chosen topics.
+    res = read_resources(output_dir if output_dir is not None else
+                         (mnt_config.output_dir if mnt_config else None))
+    est_output_mb = estimate_output_mb(bags, args.topics)
+    if res.disk_free_mb and res.disk_free_mb < est_output_mb:
+        console.print(
+            f"[yellow]⚠ Only {_fmt_gb(res.disk_free_mb)} free for ~{_fmt_gb(est_output_mb)} "
+            f"of estimated output (selected channels). It may not fit.[/yellow]"
+        )
+
+    console.print(
+        f"[cyan]Extracting[/cyan] {len(bags)} bag(s) · {len(args.topics)} topic(s)"
+        f"{f' · {len(preprocess_configs)} preprocessor(s)' if preprocess_configs else ''}"
+        f" · workers={args.workers or resolve_workers(len(bags))}"
+    )
+    _run_extraction(bags, args.topics, preprocess_configs, output_dir, mnt_config,
+                    workers=args.workers)
+    return 0
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="apairo-extractor",
+        description="Extract ROS bags to KITTI/MNT. Run with no arguments for the "
+                    "interactive TUI, or pass --input for headless extraction.",
+    )
+    p.add_argument("-i", "--input", help="Directory containing rosbags (enables headless mode)")
+    p.add_argument("-o", "--output", help="KITTI output directory")
+    p.add_argument("-t", "--topics", nargs="+", metavar="TOPIC", help="ROS topics to extract")
+    p.add_argument("-w", "--workers", type=int, help="Parallel workers (default: auto)")
+    p.add_argument("--bags", nargs="+", metavar="NAME", help="Only these bag names/stems (default: all found)")
+    p.add_argument("-l", "--list", action="store_true", help="List bags and topics, then exit")
+    p.add_argument("--preprocess-dir", help="Directory containing apairo preprocessor classes")
+    p.add_argument(
+        "--preprocess", action="append", metavar="SPEC", default=None,
+        help="Apply a preprocessor (repeatable). SPEC = 'file.Class' or "
+             "'file.Class:output=name,inputkey=channel,...' "
+             "(unset inputs default to a channel of the same name).",
+    )
+    p.add_argument("--mnt-output", help="MNT/zarr output directory (enables MNT export)")
+    p.add_argument("--points", help="KITTI channel → MNT points role")
+    p.add_argument("--image", help="KITTI channel → MNT image role")
+    p.add_argument("--odom", help="KITTI channel → MNT odometry role")
+    p.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
+    return p
+
+
+def _version() -> str:
+    from apairo_extractor import __version__
+    return __version__
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
-def main() -> None:
+def main(argv: Optional[list[str]] = None) -> None:
+    args = _build_parser().parse_args(argv)
     try:
+        if args.input is not None:
+            sys.exit(_run_headless(args))
         interactive()
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted.[/dim]")

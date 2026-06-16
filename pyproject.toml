@@ -19,10 +19,15 @@ dependencies = [
 
 [project.optional-dependencies]
 mnt = ["zarr>=2.0", "Pillow"]
+dev = ["pytest>=7.0", "Pillow"]
 
 [project.scripts]
-apairo-extract = "apairo_extractor.cli:main"
+apairo-extractor = "apairo_extractor.cli:main"
+apairo-extract = "apairo_extractor.cli:main"  # alias (legacy)
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["apairo_extractor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
