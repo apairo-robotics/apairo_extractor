@@ -5,7 +5,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from apairo.core.config import register_raw_channel
+from apairo.core.config import register_raw_channel, register_static_transform
 
 from apairo_extractor.bag import BagInfo, topic_to_dir, topics_in_bag
 from apairo_extractor.converters import (
@@ -57,10 +57,12 @@ def extract_bag(
     msgtypes: dict[str, str] = {}
     pc2_fields: dict[str, list[str]] = {}
     frame_ids: dict[str, str] = {}
-    # TF topics are demultiplexed by (parent, child) into one pose channel per edge.
-    tf_edges: dict[tuple[str, str], list[tuple[float, np.ndarray]]] = {}
-    tf_static: dict[tuple[str, str], tuple[float, np.ndarray]] = {}
+    # TF: dynamic edges -> one pose channel per (source, parent, child);
+    # static edges (/tf_static) -> calibration (time-independent, not channels).
+    tf_edges: dict[tuple[str, str, str], list[tuple[float, np.ndarray]]] = {}
+    tf_static: dict[tuple[str, str], np.ndarray] = {}
     tf_topics: set[str] = set()
+    tf_produced: set[str] = set()
     done = 0
 
     with AnyReader([bag_info.path]) as reader:
@@ -87,7 +89,7 @@ def extract_bag(
             # demultiplex them into per-edge pose streams instead of one channel.
             if msgtype_short(conn.msgtype) == "TFMessage":
                 tf_topics.add(topic)
-                _accumulate_tf(msg, _is_static_tf_topic(topic), tf_edges, tf_static)
+                _accumulate_tf(msg, topic, tf_edges, tf_static, tf_produced)
                 done += 1
                 if progress_cb and done % 50 == 0:
                     progress_cb(done, total)
@@ -157,7 +159,9 @@ def extract_bag(
         else:
             skipped.append(topic)
 
-    _write_tf_edges(seq_dir, tf_edges, tf_static, tf_topics, skipped)
+    _write_tf_edges(seq_dir, tf_edges)
+    _write_tf_calibration(seq_dir, tf_static)
+    skipped.extend(sorted(tf_topics - tf_produced))
     _write_sequence_metadata(seq_dir, bag_info)
 
     return seq_dir, skipped
@@ -173,33 +177,37 @@ def _is_static_tf_topic(topic: str) -> bool:
     return "static" in topic.rstrip("/").rsplit("/", 1)[-1]
 
 
-def _accumulate_tf(msg, is_static: bool, edges: dict, static: dict) -> None:
-    """Split a TFMessage into per-(parent, child) pose samples.
+def _accumulate_tf(msg, topic: str, edges: dict, static: dict, produced: set) -> None:
+    """Split a TFMessage into transform samples.
 
-    Each pose is ``[tx, ty, tz, qx, qy, qz, qw]`` at the transform's own
-    ``header.stamp``. Static edges keep only the latest sample.
+    Dynamic edges (``/tf``) accumulate into ``edges`` keyed by *source topic*
+    (preserved verbatim, never merged/dropped). Static edges (``/tf_static``)
+    are time-independent, so they go to ``static`` (latest value per edge) and
+    become *calibration* rather than channels. ``produced`` collects the topics
+    that yielded at least one transform.
     """
+    is_static = _is_static_tf_topic(topic)
     for ts in getattr(msg, "transforms", []):
         parent = _strip_slash(ts.header.frame_id)
         child = _strip_slash(ts.child_frame_id)
         if not parent or not child:
             continue
-        stamp = ts.header.stamp
-        t = stamp.sec + stamp.nanosec * 1e-9
+        produced.add(topic)
         tr, q = ts.transform.translation, ts.transform.rotation
         pose = np.array([tr.x, tr.y, tr.z, q.x, q.y, q.z, q.w], dtype=np.float64)
-        key = (parent, child)
         if is_static:
-            static[key] = (t, pose)
+            static[(parent, child)] = pose
         else:
-            edges.setdefault(key, []).append((t, pose))
+            stamp = ts.header.stamp
+            t = stamp.sec + stamp.nanosec * 1e-9
+            edges.setdefault((topic, parent, child), []).append((t, pose))
 
 
-def _write_one_edge(seq_dir: Path, parent: str, child: str, samples: list, static: bool) -> bool:
-    """Write one transform edge as a stacked pose channel. Returns True if written."""
+def _write_one_edge(seq_dir: Path, topic: str, parent: str, child: str, samples: list) -> None:
+    """Write one dynamic transform edge as a stacked pose channel."""
     if not samples:
-        return False
-    dir_name = f"{parent}__{child}".replace("/", "_")
+        return
+    dir_name = f"{topic_to_dir(topic)}__{parent}__{child}".replace("/", "_")
     channel_dir = seq_dir / dir_name
     channel_dir.mkdir(exist_ok=True)
     samples = sorted(samples, key=lambda s: s[0])
@@ -207,25 +215,42 @@ def _write_one_edge(seq_dir: Path, parent: str, child: str, samples: list, stati
     stacked = np.stack([pose for _, pose in samples])
     np.save(channel_dir / f"{dir_name}.npy", stacked)
     np.savetxt(channel_dir / "timestamps.txt", timestamps)
-    _write_channel_metadata(channel_dir, f"tf:{parent}->{child}", "tf2_msgs/msg/TFMessage", len(samples))
-    transform = {"parent": parent, "child": child, "format": "t_xyz_q_xyzw"}
-    if static:
-        transform["static"] = True
-    register_raw_channel(seq_dir, dir_name, "npy", transform=transform)
-    return True
+    _write_channel_metadata(channel_dir, f"{topic}:{parent}->{child}",
+                            "tf2_msgs/msg/TFMessage", len(samples))
+    register_raw_channel(seq_dir, dir_name, "npy", transform={
+        "parent": parent, "child": child, "source": topic, "format": "t_xyz_q_xyzw",
+    })
 
 
-def _write_tf_edges(
-    seq_dir: Path, edges: dict, static: dict, tf_topics: set, skipped: list
-) -> None:
-    """Flush all accumulated transform edges to per-edge pose channels."""
-    wrote = False
-    for (parent, child), samples in edges.items():
-        wrote |= _write_one_edge(seq_dir, parent, child, samples, static=False)
-    for (parent, child), sample in static.items():
-        wrote |= _write_one_edge(seq_dir, parent, child, [sample], static=True)
-    if tf_topics and not wrote:
-        skipped.extend(sorted(tf_topics))
+def _write_tf_edges(seq_dir: Path, edges: dict) -> None:
+    """Flush every dynamic transform edge to its own pose channel (faithful)."""
+    for (topic, parent, child), samples in edges.items():
+        _write_one_edge(seq_dir, topic, parent, child, samples)
+
+
+def _pose7_to_matrix(pose) -> np.ndarray:
+    """``[tx,ty,tz, qx,qy,qz,qw]`` -> 4x4 homogeneous transform."""
+    tx, ty, tz, qx, qy, qz, qw = (float(v) for v in pose)
+    n = qx * qx + qy * qy + qz * qz + qw * qw
+    s = 0.0 if n == 0.0 else 2.0 / n
+    m = np.eye(4)
+    m[0, 0] = 1 - s * (qy * qy + qz * qz)
+    m[0, 1] = s * (qx * qy - qz * qw)
+    m[0, 2] = s * (qx * qz + qy * qw)
+    m[1, 0] = s * (qx * qy + qz * qw)
+    m[1, 1] = 1 - s * (qx * qx + qz * qz)
+    m[1, 2] = s * (qy * qz - qx * qw)
+    m[2, 0] = s * (qx * qz - qy * qw)
+    m[2, 1] = s * (qy * qz + qx * qw)
+    m[2, 2] = 1 - s * (qx * qx + qy * qy)
+    m[0, 3], m[1, 3], m[2, 3] = tx, ty, tz
+    return m
+
+
+def _write_tf_calibration(seq_dir: Path, static: dict) -> None:
+    """Write static transforms as extrinsics in ``.apairo/calibration.yaml``."""
+    for (parent, child), pose in static.items():
+        register_static_transform(seq_dir, parent, child, _pose7_to_matrix(pose))
 
 
 def _write_channel_metadata(

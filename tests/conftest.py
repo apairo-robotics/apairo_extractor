@@ -127,8 +127,9 @@ def write_tiny_bag(path, fmt):
     return path
 
 
-def _tf_message(ts, fmt, stamp_ns):
-    """A TFMessage carrying all TF_EDGES at *stamp_ns* (identity rotation)."""
+def _tf_message(ts, fmt, stamp_ns, edges=None):
+    """A TFMessage carrying *edges* (default ``TF_EDGES``) at *stamp_ns*."""
+    edges = TF_EDGES if edges is None else edges
     TFMessage = ts.types["tf2_msgs/msg/TFMessage"]
     TransformStamped = ts.types["geometry_msgs/msg/TransformStamped"]
     Transform = ts.types["geometry_msgs/msg/Transform"]
@@ -139,7 +140,7 @@ def _tf_message(ts, fmt, stamp_ns):
     stamp = Time(sec=stamp_ns // 1_000_000_000, nanosec=stamp_ns % 1_000_000_000)
 
     stamped = []
-    for parent, child, (tx, ty, tz) in TF_EDGES:
+    for parent, child, (tx, ty, tz) in edges:
         if fmt == "ros1":
             header = Header(seq=0, stamp=stamp, frame_id=parent)
         else:
@@ -176,6 +177,30 @@ def write_tf_bag(path, fmt, *, static=False):
         for i in range(count):
             stamp_ns = 1_000_000_000 + i * 100_000_000
             writer.write(conn, stamp_ns, serialize(_tf_message(ts, fmt, stamp_ns), msgtype))
+    return path
+
+
+def write_tf_bag_with_static(path, fmt, dynamic_edges, static_edges):
+    """Write one bag carrying both ``/tf`` (``dynamic_edges`` × TF_COUNT msgs)
+    and ``/tf_static`` (``static_edges``, one latched msg)."""
+    store, serialize_name = _FORMATS[fmt]
+    ts = get_typestore(store)
+    if "tf2_msgs/msg/TFMessage" not in ts.types:
+        ts.register(get_types_from_msg(
+            "geometry_msgs/TransformStamped[] transforms", "tf2_msgs/msg/TFMessage"))
+    serialize = getattr(ts, serialize_name)
+    msgtype = ts.types["tf2_msgs/msg/TFMessage"].__msgtype__
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _open_writer(path, fmt) as writer:
+        dyn = writer.add_connection(TF_TOPIC, msgtype, typestore=ts)
+        for i in range(TF_COUNT):
+            stamp_ns = 1_000_000_000 + i * 100_000_000
+            writer.write(dyn, stamp_ns,
+                         serialize(_tf_message(ts, fmt, stamp_ns, dynamic_edges), msgtype))
+        stat = writer.add_connection(TF_STATIC_TOPIC, msgtype, typestore=ts)
+        writer.write(stat, 1_000_000_000,
+                     serialize(_tf_message(ts, fmt, 1_000_000_000, static_edges), msgtype))
     return path
 
 
