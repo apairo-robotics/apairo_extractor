@@ -23,7 +23,11 @@ dev = ["pytest>=7.0", "Pillow"]
 
 [project.scripts]
 apairo-extractor = "apairo_extractor.cli:main"
-apairo-extract = "apairo_extractor.cli:main"  # alias (legacy)
+
+# Ecosystem dispatch: enables `apairo extractor ...` via apairo's plugin
+# discovery (apairo never depends on this package -- it finds it when installed).
+[project.entry-points."apairo.cli_plugins"]
+extractor = "apairo_extractor.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
