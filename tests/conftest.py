@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from rosbags.typesys import Stores, get_typestore
+from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
 # Each format maps to (typestore store, serialize method name).
 _FORMATS = {
@@ -26,6 +26,13 @@ CHATTER_TOPIC = "/chatter"     # String      -> unsupported, must be skipped
 LIDAR_COUNT = 3
 IMU_COUNT = 4
 CHATTER_COUNT = 2
+
+TF_TOPIC = "/tf"               # TFMessage -> demuxed into one channel per edge
+TF_STATIC_TOPIC = "/tf_static"
+TF_COUNT = 5                   # dynamic /tf messages
+# Edges present in every TF message: (parent, child, translation).
+TF_EDGES = [("odom", "base_link", (1.0, 0.0, 0.0)),
+            ("base_link", "lidar", (0.0, 0.0, 0.5))]
 
 # Point cloud payload: 2 xyz points, float32.
 CLOUD_POINTS = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=np.float32)
@@ -117,6 +124,58 @@ def write_tiny_bag(path, fmt):
                 except TypeError:  # _string_msg ignores fmt
                     msg = builder(ts, stamp_ns)
                 writer.write(conn, stamp_ns, serialize(msg, msgtype))
+    return path
+
+
+def _tf_message(ts, fmt, stamp_ns):
+    """A TFMessage carrying all TF_EDGES at *stamp_ns* (identity rotation)."""
+    TFMessage = ts.types["tf2_msgs/msg/TFMessage"]
+    TransformStamped = ts.types["geometry_msgs/msg/TransformStamped"]
+    Transform = ts.types["geometry_msgs/msg/Transform"]
+    Vec3 = ts.types["geometry_msgs/msg/Vector3"]
+    Quat = ts.types["geometry_msgs/msg/Quaternion"]
+    Header = ts.types["std_msgs/msg/Header"]
+    Time = ts.types["builtin_interfaces/msg/Time"]
+    stamp = Time(sec=stamp_ns // 1_000_000_000, nanosec=stamp_ns % 1_000_000_000)
+
+    stamped = []
+    for parent, child, (tx, ty, tz) in TF_EDGES:
+        if fmt == "ros1":
+            header = Header(seq=0, stamp=stamp, frame_id=parent)
+        else:
+            header = Header(stamp=stamp, frame_id=parent)
+        stamped.append(TransformStamped(
+            header=header,
+            child_frame_id=child,
+            transform=Transform(
+                translation=Vec3(x=tx, y=ty, z=tz),
+                rotation=Quat(x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+        ))
+    return TFMessage(transforms=stamped)
+
+
+def write_tf_bag(path, fmt, *, static=False):
+    """Write a bag with a single TF topic (``/tf`` or ``/tf_static``)."""
+    store, serialize_name = _FORMATS[fmt]
+    ts = get_typestore(store)
+    # tf2_msgs is not bundled in the ROS1 typestore; register it (its definition
+    # is just a TransformStamped array, exactly what a real ROS1 bag carries).
+    if "tf2_msgs/msg/TFMessage" not in ts.types:
+        ts.register(get_types_from_msg(
+            "geometry_msgs/TransformStamped[] transforms", "tf2_msgs/msg/TFMessage"))
+    serialize = getattr(ts, serialize_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    topic = TF_STATIC_TOPIC if static else TF_TOPIC
+    msgtype = ts.types["tf2_msgs/msg/TFMessage"].__msgtype__
+    count = 1 if static else TF_COUNT
+
+    with _open_writer(path, fmt) as writer:
+        conn = writer.add_connection(topic, msgtype, typestore=ts)
+        for i in range(count):
+            stamp_ns = 1_000_000_000 + i * 100_000_000
+            writer.write(conn, stamp_ns, serialize(_tf_message(ts, fmt, stamp_ns), msgtype))
     return path
 
 

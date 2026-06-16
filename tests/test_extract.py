@@ -83,6 +83,16 @@ def test_sequence_metadata_written(tiny_bag, tmp_path):
     assert meta["bag"] == str(info.path)
 
 
+def test_channel_frame_id_recorded(tiny_bag, tmp_path):
+    # The message header.frame_id is recorded as the channel's `frame`.
+    from apairo.core.config import read_config
+
+    _, (seq_dir, _) = _extract(tiny_bag, tmp_path, [LIDAR_TOPIC, IMU_TOPIC])
+    channels = read_config(seq_dir)["channels"]
+    assert channels["lidar"]["frame"] == "base"   # frame topic (npys)
+    assert channels["imu"]["frame"] == "base"      # seq topic (npy)
+
+
 def test_extract_is_idempotent_across_sessions(tiny_bag, tmp_path):
     # Two passes (e.g. resuming) must not corrupt output or channel registration.
     info = read_bag_info(tiny_bag)

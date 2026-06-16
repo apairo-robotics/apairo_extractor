@@ -56,6 +56,11 @@ def extract_bag(
     seq_data: dict[str, list[tuple[int, np.ndarray]]] = {}
     msgtypes: dict[str, str] = {}
     pc2_fields: dict[str, list[str]] = {}
+    frame_ids: dict[str, str] = {}
+    # TF topics are demultiplexed by (parent, child) into one pose channel per edge.
+    tf_edges: dict[tuple[str, str], list[tuple[float, np.ndarray]]] = {}
+    tf_static: dict[tuple[str, str], tuple[float, np.ndarray]] = {}
+    tf_topics: set[str] = set()
     done = 0
 
     with AnyReader([bag_info.path]) as reader:
@@ -77,6 +82,24 @@ def extract_bag(
                 if progress_cb and done % 50 == 0:
                     progress_cb(done, total)
                 continue
+
+            # /tf and /tf_static carry many parent→child edges per message;
+            # demultiplex them into per-edge pose streams instead of one channel.
+            if msgtype_short(conn.msgtype) == "TFMessage":
+                tf_topics.add(topic)
+                _accumulate_tf(msg, _is_static_tf_topic(topic), tf_edges, tf_static)
+                done += 1
+                if progress_cb and done % 50 == 0:
+                    progress_cb(done, total)
+                continue
+
+            # Coordinate frame of the channel, from the first message's header
+            # (ROS1 leading slash stripped). Headerless messages leave it empty.
+            if topic not in frame_ids:
+                hdr = getattr(msg, "header", None)
+                fid = getattr(hdr, "frame_id", "") if hdr is not None else ""
+                fid = fid.strip() if isinstance(fid, str) else ""
+                frame_ids[topic] = fid[1:] if fid.startswith("/") else fid
 
             arr = convert_message(msg, conn.msgtype)
             if arr is not None:
@@ -106,6 +129,8 @@ def extract_bag(
     skipped: list[str] = list(missing)
 
     for topic in available:
+        if topic in tf_topics:
+            continue  # handled as per-edge channels below
         dir_name = topic_to_dir(topic)
         msgtype = msgtypes.get(topic, "unknown")
         channel_dir = seq_dir / dir_name
@@ -117,7 +142,7 @@ def extract_bag(
                 channel_dir, topic, msgtype,
                 frame_counts[topic], pc2_fields.get(topic),
             )
-            register_raw_channel(seq_dir, dir_name, "npys")
+            register_raw_channel(seq_dir, dir_name, "npys", frame=frame_ids.get(topic) or None)
 
         elif topic in seq_data and seq_data[topic]:
             channel_dir.mkdir(exist_ok=True)
@@ -127,14 +152,80 @@ def extract_bag(
             np.save(channel_dir / f"{dir_name}.npy", stacked)
             np.savetxt(channel_dir / "timestamps.txt", timestamps)
             _write_channel_metadata(channel_dir, topic, msgtype, len(frames))
-            register_raw_channel(seq_dir, dir_name, "npy")
+            register_raw_channel(seq_dir, dir_name, "npy", frame=frame_ids.get(topic) or None)
 
         else:
             skipped.append(topic)
 
+    _write_tf_edges(seq_dir, tf_edges, tf_static, tf_topics, skipped)
     _write_sequence_metadata(seq_dir, bag_info)
 
     return seq_dir, skipped
+
+
+def _strip_slash(name: str) -> str:
+    name = (name or "").strip()
+    return name[1:] if name.startswith("/") else name
+
+
+def _is_static_tf_topic(topic: str) -> bool:
+    """A ``/tf_static``-style topic (latched static transforms)."""
+    return "static" in topic.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _accumulate_tf(msg, is_static: bool, edges: dict, static: dict) -> None:
+    """Split a TFMessage into per-(parent, child) pose samples.
+
+    Each pose is ``[tx, ty, tz, qx, qy, qz, qw]`` at the transform's own
+    ``header.stamp``. Static edges keep only the latest sample.
+    """
+    for ts in getattr(msg, "transforms", []):
+        parent = _strip_slash(ts.header.frame_id)
+        child = _strip_slash(ts.child_frame_id)
+        if not parent or not child:
+            continue
+        stamp = ts.header.stamp
+        t = stamp.sec + stamp.nanosec * 1e-9
+        tr, q = ts.transform.translation, ts.transform.rotation
+        pose = np.array([tr.x, tr.y, tr.z, q.x, q.y, q.z, q.w], dtype=np.float64)
+        key = (parent, child)
+        if is_static:
+            static[key] = (t, pose)
+        else:
+            edges.setdefault(key, []).append((t, pose))
+
+
+def _write_one_edge(seq_dir: Path, parent: str, child: str, samples: list, static: bool) -> bool:
+    """Write one transform edge as a stacked pose channel. Returns True if written."""
+    if not samples:
+        return False
+    dir_name = f"{parent}__{child}".replace("/", "_")
+    channel_dir = seq_dir / dir_name
+    channel_dir.mkdir(exist_ok=True)
+    samples = sorted(samples, key=lambda s: s[0])
+    timestamps = np.array([t for t, _ in samples])
+    stacked = np.stack([pose for _, pose in samples])
+    np.save(channel_dir / f"{dir_name}.npy", stacked)
+    np.savetxt(channel_dir / "timestamps.txt", timestamps)
+    _write_channel_metadata(channel_dir, f"tf:{parent}->{child}", "tf2_msgs/msg/TFMessage", len(samples))
+    transform = {"parent": parent, "child": child, "format": "t_xyz_q_xyzw"}
+    if static:
+        transform["static"] = True
+    register_raw_channel(seq_dir, dir_name, "npy", transform=transform)
+    return True
+
+
+def _write_tf_edges(
+    seq_dir: Path, edges: dict, static: dict, tf_topics: set, skipped: list
+) -> None:
+    """Flush all accumulated transform edges to per-edge pose channels."""
+    wrote = False
+    for (parent, child), samples in edges.items():
+        wrote |= _write_one_edge(seq_dir, parent, child, samples, static=False)
+    for (parent, child), sample in static.items():
+        wrote |= _write_one_edge(seq_dir, parent, child, [sample], static=True)
+    if tf_topics and not wrote:
+        skipped.extend(sorted(tf_topics))
 
 
 def _write_channel_metadata(
