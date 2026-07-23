@@ -1,6 +1,6 @@
 # Apairo Extractor
 
-Using [apairo](../apairo), extract ROS bags into an apairo-native dataset
+Using [apairo](https://github.com/apairo-robotics/apairo), extract ROS bags into an apairo-native dataset
 (KITTI-style `.apairo` layout; Zarr WIP) — ready to load with `apairo.RawDataset`.
 It writes the `.apairo` sidecars as it goes (per-sequence `channels.yaml`,
 root `dataset.yaml`), tags each channel with its `header.frame_id`, and handles
