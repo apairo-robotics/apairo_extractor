@@ -122,9 +122,19 @@ def _pointcloud2(msg) -> np.ndarray:
 def _image(msg) -> np.ndarray:
     data = np.frombuffer(msg.data, dtype=np.uint8)
     channels = msg.step // msg.width if msg.width else 1
-    if channels > 1:
-        return data.reshape(msg.height, msg.width, channels)
-    return data.reshape(msg.height, msg.width)
+    if channels <= 1:
+        return data.reshape(msg.height, msg.width)
+    img = data.reshape(msg.height, msg.width, channels)
+    # ROS colour topics are commonly published as bgr8/bgra8 (the cv_bridge /
+    # OpenCV default); honour the encoding so the stored array is canonical
+    # RGB(A). Ignoring it silently swapped red and blue for every downstream
+    # consumer — the classic "red sky, green plant" symptom in a viewer.
+    enc = (getattr(msg, "encoding", "") or "").lower()
+    if enc == "bgr8":
+        img = np.ascontiguousarray(img[..., ::-1])
+    elif enc == "bgra8":
+        img = np.ascontiguousarray(img[..., [2, 1, 0, 3]])
+    return img
 
 
 def _compressed_image(msg) -> np.ndarray:

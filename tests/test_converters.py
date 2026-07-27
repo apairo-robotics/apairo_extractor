@@ -113,3 +113,36 @@ def test_pointcloud2_truncated_data_is_clamped():
     arr = cv.convert_message(msg, "sensor_msgs/msg/PointCloud2")
     assert arr.shape == (1, 3)
     np.testing.assert_allclose(arr, pts)
+
+
+def _img_msg(data: bytes, *, w: int, h: int, channels: int, encoding: str):
+    return ns(width=w, height=h, step=w * channels, encoding=encoding, data=data)
+
+
+def test_image_bgr8_is_reordered_to_rgb():
+    # Two pixels stored BGR; the converter must return canonical RGB.
+    data = bytes([10, 20, 30, 40, 50, 60])  # px0 BGR=(10,20,30), px1 BGR=(40,50,60)
+    arr = cv.convert_message(_img_msg(data, w=2, h=1, channels=3, encoding="bgr8"),
+                             "sensor_msgs/msg/Image")
+    np.testing.assert_array_equal(arr, [[[30, 20, 10], [60, 50, 40]]])
+
+
+def test_image_rgb8_is_left_untouched():
+    data = bytes([10, 20, 30, 40, 50, 60])
+    arr = cv.convert_message(_img_msg(data, w=2, h=1, channels=3, encoding="rgb8"),
+                             "sensor_msgs/msg/Image")
+    np.testing.assert_array_equal(arr, [[[10, 20, 30], [40, 50, 60]]])
+
+
+def test_image_bgra8_is_reordered_to_rgba():
+    data = bytes([10, 20, 30, 40])  # one pixel BGRA
+    arr = cv.convert_message(_img_msg(data, w=1, h=1, channels=4, encoding="bgra8"),
+                             "sensor_msgs/msg/Image")
+    np.testing.assert_array_equal(arr, [[[30, 20, 10, 40]]])
+
+
+def test_image_mono8_stays_2d():
+    data = bytes([10, 20, 30, 40])
+    arr = cv.convert_message(_img_msg(data, w=2, h=2, channels=1, encoding="mono8"),
+                             "sensor_msgs/msg/Image")
+    np.testing.assert_array_equal(arr, [[10, 20], [30, 40]])
