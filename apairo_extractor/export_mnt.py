@@ -23,8 +23,16 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 import numpy as np
 
-from apairo import WRITERS, MNTDataset
-from apairo.dataset.mnt.dataset import RAW_CHANNEL_PATHS
+from apairo import WRITERS
+
+# Where each channel lives in a mission, relative to the mission directory.
+# The extractor owns this table: the MNT reader left apairo's core in 0.3.
+_MNT_PATHS: dict[str, tuple[str, ...]] = {
+    "points":    ("points.zarr",),
+    "position":  ("trajectory.zarr", "positions.zarr"),
+    "yaw":       ("trajectory.zarr", "yaws.zarr"),
+    "timestamp": ("trajectory.zarr", "timestamps.zarr"),
+}
 
 if TYPE_CHECKING:
     from apairo_extractor.bag import BagInfo
@@ -65,11 +73,9 @@ def extract_bag_to_mnt(
                     ``None`` → use the maximum across all frames.
         progress_cb: Optional callback(stage, done, total).
     """
-    from rosbags.rosbag1 import Reader
-    from rosbags.typesys import Stores, get_typestore
+    from rosbags.highlevel import AnyReader
     from apairo_extractor.converters import convert_message
 
-    typestore = get_typestore(Stores.ROS1_NOETIC)
     mission_dir.mkdir(parents=True, exist_ok=True)
 
     wanted = {t for t in (points_topic, image_topic, odometry_topic) if t is not None}
@@ -80,11 +86,12 @@ def extract_bag_to_mnt(
     img_frames:  list[np.ndarray]               = []
     odom_frames: list[tuple[float, np.ndarray]] = []  # (timestamp_s, array)
 
-    with Reader(bag_info.path) as reader:
+    # AnyReader, as extract_bag: a ROS1 file or a ROS2 directory.
+    with AnyReader([bag_info.path]) as reader:
         conns = [c for c in reader.connections if c.topic in wanted]
         for conn, ts_ns, rawdata in reader.messages(connections=conns):
             try:
-                msg = typestore.deserialize_ros1(rawdata, conn.msgtype)
+                msg = reader.deserialize(rawdata, conn.msgtype)
             except Exception:
                 done += 1
                 if progress_cb and done % 50 == 0:
@@ -114,7 +121,6 @@ def extract_bag_to_mnt(
     if odom_frames:
         _write_trajectory(mission_dir, odom_frames, progress_cb)
 
-    MNTDataset.init(mission_dir)
     _write_metadata(mission_dir, bag_info.path)
 
 
@@ -160,7 +166,6 @@ def export_to_mnt(
         if odom_frames:
             _write_trajectory(mission_dir, odom_frames, progress_cb)
 
-    MNTDataset.init(mission_dir)
     _write_metadata(mission_dir, seq_dir)
 
 
@@ -189,7 +194,7 @@ def _write_points(
         if progress_cb:
             progress_cb("points", i + 1, n)
 
-    path = mission_dir / Path(*RAW_CHANNEL_PATHS["points"])
+    path = mission_dir / Path(*_MNT_PATHS["points"])
     WRITERS["zarr"]().write(out, path)
 
 
@@ -224,15 +229,15 @@ def _write_trajectory(
 
     if data.shape[1] >= 2:
         w.write(data[:, :2].astype(np.float32),
-                mission_dir / Path(*RAW_CHANNEL_PATHS["position"]))
+                mission_dir / Path(*_MNT_PATHS["position"]))
 
     if data.shape[1] >= 7:
         qx, qy, qz, qw = data[:, 3], data[:, 4], data[:, 5], data[:, 6]
         yaws = np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy ** 2 + qz ** 2))
         w.write(yaws.astype(np.float32),
-                mission_dir / Path(*RAW_CHANNEL_PATHS["yaw"]))
+                mission_dir / Path(*_MNT_PATHS["yaw"]))
 
-    w.write(timestamps, mission_dir / Path(*RAW_CHANNEL_PATHS["timestamp"]))
+    w.write(timestamps, mission_dir / Path(*_MNT_PATHS["timestamp"]))
 
     if progress_cb:
         progress_cb("trajectory", len(odom_frames), len(odom_frames))
