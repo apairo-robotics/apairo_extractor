@@ -23,7 +23,7 @@ class Centroid(FramePreprocessor):
     input_keys = ["points"]
     output_key = "centroid"
 
-    def process(self, sample):
+    def __call__(self, sample):
         return np.mean(sample.data["points"], axis=0)
 '''
 

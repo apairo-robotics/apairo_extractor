@@ -9,12 +9,21 @@ apairo predates ``RawDataset``.
 """
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from apairo_extractor.bag import read_bag_info
+from apairo_extractor.preprocess import PreprocessConfig
 from apairo_extractor.runner import run_extraction
 
-from conftest import IMU_COUNT, IMU_TOPIC, LIDAR_COUNT, LIDAR_TOPIC, write_tiny_bag
+from conftest import (
+    CLOUD_POINTS,
+    IMU_COUNT,
+    IMU_TOPIC,
+    LIDAR_COUNT,
+    LIDAR_TOPIC,
+    write_tiny_bag,
+)
 
 apairo = pytest.importorskip("apairo")
 if not hasattr(apairo, "RawDataset"):
@@ -69,3 +78,48 @@ def test_channel_loaders_match_kind(extracted_root):
     channels = read_config(extracted_root / "seq_a")["channels"]
     assert channels["lidar"]["loader"] == "npys"
     assert channels["imu"]["loader"] == "npy"
+
+
+class _Centroid(apairo.FramePreprocessor):
+    input_keys = ["points"]
+    output_key = "centroid"
+
+    def __call__(self, sample):
+        return np.mean(sample.data["points"], axis=0)
+
+
+class _Sums(apairo.SequencePreprocessor):
+    input_keys = ["points"]
+    output_key = "sums"
+
+    def __call__(self, frames):
+        return np.stack([s.data["points"].sum(axis=0) for s in frames])
+
+
+def test_preprocessed_channels_load_back(tmp_path, fmt):
+    """A frame preprocessor leaves per-frame .npy (npys), a sequence one a
+    stacked .npy (npy); apairo reads both back, one row per lidar frame."""
+    from apairo.core.config import read_config
+
+    bag = read_bag_info(
+        write_tiny_bag(tmp_path / ("seq.bag" if fmt == "ros1" else "seq"), fmt)
+    )
+    configs = [
+        PreprocessConfig(_Centroid, "centroid", {"points": "lidar"}),
+        PreprocessConfig(_Sums, "sums", {"points": "lidar"}),
+    ]
+    out = tmp_path / "ds"
+    results = run_extraction(
+        [bag], [LIDAR_TOPIC, IMU_TOPIC], out, preprocess_configs=configs, workers=1
+    )
+    assert [err for _, _, err in results] == [None]
+
+    seq_dir = out / bag.path.stem
+    channels = read_config(seq_dir)["channels"]
+    assert channels["centroid"]["loader"] == "npys"
+    assert channels["sums"]["loader"] == "npy"
+
+    sync = apairo.RawDataset(seq_dir).synchronize(reference="lidar")
+    assert len(sync) == LIDAR_COUNT
+    np.testing.assert_allclose(sync[0].data["centroid"], CLOUD_POINTS.mean(axis=0))
+    np.testing.assert_allclose(sync[0].data["sums"], CLOUD_POINTS.sum(axis=0))

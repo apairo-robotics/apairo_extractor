@@ -64,14 +64,22 @@ def run_preprocessors(
         out_dir.mkdir(exist_ok=True)
 
         preprocessor = cfg.cls()
-        out_loader = getattr(cfg.cls, "output_loader", "npys")
         timestamps_from = getattr(cfg.cls, "timestamps_from", None)
         sources = list(cfg.key_map.values())
 
+        # Register the format written here, whatever the class declares: one
+        # .npy per frame for a frame preprocessor, one stacked .npy otherwise.
         if issubclass(cfg.cls, FramePreprocessor):
             _run_frame(preprocessor, seq_dir, cfg, channels_meta, out_dir, progress_cb)
+            out_loader = "npys"
         elif issubclass(cfg.cls, SequencePreprocessor):
             _run_sequence(preprocessor, seq_dir, cfg, channels_meta, out_dir)
+            out_loader = "npy"
+        else:
+            raise TypeError(
+                f"{cfg.cls.__name__} is neither a FramePreprocessor "
+                "nor a SequencePreprocessor"
+            )
 
         register_channel(
             seq_dir,
@@ -124,7 +132,7 @@ def _run_frame(preprocessor, seq_dir, cfg, channels_meta, out_dir, progress_cb):
                 else _load_seq(seq_dir, channel)[idx]
             )
         ts = float(timestamps[idx]) if idx < len(timestamps) else 0.0
-        result = np.asarray(preprocessor.process(Sample(data=data, timestamp=ts)))
+        result = np.asarray(preprocessor(Sample(data=data, timestamp=ts)))
         np.save(out_dir / f"{idx:06d}.npy", result)
         out_ts.append(ts)
         if progress_cb:
@@ -160,6 +168,6 @@ def _run_sequence(preprocessor, seq_dir, cfg, channels_meta, out_dir):
             ts = float(timestamps[idx]) if idx < len(timestamps) else 0.0
             yield Sample(data=data, timestamp=ts)
 
-    result = np.asarray(preprocessor.process(_iter()))
+    result = np.asarray(preprocessor(_iter()))
     np.save(out_dir / f"{cfg.output_key}.npy", result)
     np.savetxt(out_dir / "timestamps.txt", timestamps)
