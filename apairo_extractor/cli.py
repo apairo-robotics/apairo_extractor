@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rosbag → KITTI/ZARR extractor with optional apairo preprocessing.
+"""Rosbag → apairo dataset / MNT extractor with optional apairo preprocessing.
 
 Usage:
   apairo-extractor                                   # interactive TUI
@@ -68,7 +68,7 @@ BANNER = """\
 
              E X T R A C T
 
-          → KITTI • ZARR
+          → .apairo • MNT
 """
 # ── Display helpers ────────────────────────────────────────────────────────────
 
@@ -635,7 +635,7 @@ def interactive() -> None:
             action = questionary.select(
                 "Output format?",
                 choices=[
-                    questionary.Choice("KITTI only",       value="kitti"),
+                    questionary.Choice("apairo only",      value="apairo"),
                     questionary.Choice("MNT only (zarr)",  value="mnt"),
                     questionary.Choice("Both",             value="both"),
                     questionary.Separator(),
@@ -645,7 +645,7 @@ def interactive() -> None:
             ).ask()
             if action is None or action == "back":
                 state = "PREPROCESS_CHOICE"
-            elif action == "kitti":
+            elif action == "apairo":
                 mnt_config = None
                 mnt_only = False
                 state = "OUTPUT_DIR"
@@ -719,7 +719,7 @@ def interactive() -> None:
         # ── OUTPUT_DIR ────────────────────────────────────────────────────────
         elif state == "OUTPUT_DIR":
             console.print()
-            default = str(output_dir) if output_dir else str(Path.home() / "kitti_extracted")
+            default = str(output_dir) if output_dir else str(Path.home() / "apairo_extracted")
             raw = questionary.path(
                 "Output directory  (Ctrl+C = back):",
                 default=default,
@@ -978,7 +978,7 @@ def _run_headless(args: argparse.Namespace) -> int:
         console.print("[red]--topics is required (or use --list to discover them).[/red]")
         return 2
     if output_dir is None and mnt_config is None:
-        console.print("[red]Provide --output (KITTI) and/or --mnt-output (MNT).[/red]")
+        console.print("[red]Provide --output (apairo) and/or --mnt-output (MNT).[/red]")
         return 2
 
     available = set().union(*(topics_in_bag(b) for b in bags))
@@ -1012,11 +1012,11 @@ def _run_headless(args: argparse.Namespace) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="apairo-extractor",
-        description="Extract ROS bags to KITTI/MNT. Run with no arguments for the "
-                    "interactive TUI, or pass --input for headless extraction.",
+        description="Extract ROS bags to an apairo dataset and/or MNT. Run with no "
+                    "arguments for the interactive TUI, or pass --input for headless extraction.",
     )
     p.add_argument("-i", "--input", help="Directory containing rosbags (enables headless mode)")
-    p.add_argument("-o", "--output", help="KITTI output directory")
+    p.add_argument("-o", "--output", help="apairo dataset root: one directory per channel, described by .apairo")
     p.add_argument("-t", "--topics", nargs="+", metavar="TOPIC", help="ROS topics to extract")
     p.add_argument("-w", "--workers", type=int, help="Parallel workers (default: auto)")
     p.add_argument("--bags", nargs="+", metavar="NAME", help="Only these bag names/stems (default: all found)")
@@ -1029,9 +1029,9 @@ def _build_parser() -> argparse.ArgumentParser:
              "(unset inputs default to a channel of the same name).",
     )
     p.add_argument("--mnt-output", help="MNT/zarr output directory (enables MNT export)")
-    p.add_argument("--points", help="KITTI channel → MNT points role")
-    p.add_argument("--image", help="KITTI channel → MNT image role")
-    p.add_argument("--odom", help="KITTI channel → MNT odometry role")
+    p.add_argument("--points", help="Channel → MNT points role")
+    p.add_argument("--image", help="Channel → MNT image role")
+    p.add_argument("--odom", help="Channel → MNT odometry role")
     p.add_argument("--version", action="version", version=f"%(prog)s {_version()}")
     return p
 

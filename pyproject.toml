@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apairo-extractor"
 version = "0.1.0"
-description = "Extract ROS bags to KITTI format with optional apairo preprocessing"
+description = "Extract ROS bags to an apairo dataset, with optional preprocessing"
 requires-python = ">=3.11"
 dependencies = [
     "rosbags>=0.9.0",

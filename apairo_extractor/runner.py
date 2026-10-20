@@ -38,7 +38,7 @@ BagResult = tuple[str, list, Optional[str]]
 
 
 def topic_for_channel(channel: str | None, topics: list[str]) -> str | None:
-    """Reverse-map a KITTI channel dir name to its original ROS topic name."""
+    """Reverse-map a channel dir name to its original ROS topic name."""
     if channel is None:
         return None
     for t in topics:
@@ -124,7 +124,7 @@ def _do_bag(
         report("done", max(mnt_total, 1), max(mnt_total, 1))
         return skipped
 
-    # KITTI extraction (+ optional preprocessing / MNT conversion from KITTI).
+    # apairo extraction (+ optional preprocessing / MNT conversion from it).
     topic_total = sum(t.msgcount for t in bag.topics if t.name in set(topics))
 
     def _extract_cb(done, total):
@@ -173,7 +173,7 @@ def _extract_one_bag_worker(args) -> BagResult:
 
 
 def _finalize_dataset(output_dir: Optional[Path], mnt_only: bool) -> None:
-    """Dataset-level apairo init, written once after extraction (KITTI only).
+    """Dataset-level apairo init, written once after extraction (apairo output only).
 
     Delegates to :meth:`apairo.dataset.raw.RawDataset.init`: it (idempotently)
     ensures each sequence's ``.apairo/channels.yaml`` and writes the root
@@ -208,9 +208,9 @@ def run_extraction(
     bag is reported via its result tuple and does not abort the others.
 
     Args:
-        output_dir: KITTI output root, or None for direct MNT-only extraction.
-        mnt_config: MNT/zarr export config (KITTI→MNT, or direct if no output_dir).
-        preprocess_configs: apairo preprocessors to run after each KITTI extract.
+        output_dir: apairo dataset root, or None for direct MNT-only extraction.
+        mnt_config: MNT/zarr export config (apairo→MNT, or direct if no output_dir).
+        preprocess_configs: apairo preprocessors to run after each sequence extract.
         workers: parallel bag count; default :func:`resolve_workers`. Clamped to
             ``[1, len(bags)]``.
         on_progress: called as (bag_id, phase, done, total) during extraction.

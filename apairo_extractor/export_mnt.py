@@ -1,8 +1,8 @@
-"""Export ROS bags or KITTI sequences to MNT/zarr layout.
+"""Export ROS bags or extracted apairo sequences to MNT/zarr layout.
 
 Two entry points:
-  extract_bag_to_mnt() — bag → MNT directly (no intermediate KITTI files)
-  export_to_mnt()      — KITTI seq dir → MNT (for "both" mode)
+  extract_bag_to_mnt() — bag → MNT directly (no intermediate channel files)
+  export_to_mnt()      — apairo seq dir → MNT (for "both" mode)
 
 MNT mission layout produced::
 
@@ -40,9 +40,9 @@ if TYPE_CHECKING:
 
 @dataclass
 class MntExportConfig:
-    points_channel:   str | None = None   # KITTI channel dir name → points.zarr
-    image_channel:    str | None = None   # KITTI channel dir name → images.tar
-    odometry_channel: str | None = None   # KITTI channel dir name → trajectory.zarr
+    points_channel:   str | None = None   # channel dir name → points.zarr
+    image_channel:    str | None = None   # channel dir name → images.tar
+    odometry_channel: str | None = None   # channel dir name → trajectory.zarr
     max_points:       int | None = None   # truncate/pad clouds (None = max across frames)
     output_dir: Path = field(default_factory=lambda: Path.home() / "mnt_exported")
 
@@ -61,7 +61,7 @@ def extract_bag_to_mnt(
 ) -> None:
     """Read a ROS bag and write directly to MNT/zarr format.
 
-    Bypasses KITTI entirely — no intermediate .npy files are written.
+    Bypasses the channel directories — no intermediate .npy files are written.
 
     Args:
         bag_info: Bag metadata.
@@ -130,14 +130,14 @@ def export_to_mnt(
     config: MntExportConfig,
     progress_cb: Optional[Callable[[str, int, int], None]] = None,
 ) -> None:
-    """Convert an existing KITTI sequence directory to MNT/zarr format.
+    """Convert an extracted apairo sequence directory to MNT/zarr format.
 
-    Use this for "both" mode where KITTI output is also kept.
+    Use this for "both" mode where the channel directories are also kept.
 
     Args:
-        seq_dir: Extracted KITTI sequence directory (output of extract_bag).
+        seq_dir: Extracted sequence directory (output of extract_bag).
         mission_dir: Target MNT mission directory (will be created).
-        config: Channel mapping (KITTI dir names).
+        config: Channel mapping (channel dir names).
         progress_cb: Optional callback(stage, done, total).
     """
     from apairo.core.config import config_exists, read_config
@@ -149,17 +149,17 @@ def export_to_mnt(
         channels_cfg = read_config(seq_dir).get("channels", {})
 
     if config.points_channel:
-        frames = _load_kitti_npys(seq_dir / config.points_channel)
+        frames = _load_channel_npys(seq_dir / config.points_channel)
         if frames:
             _write_points(mission_dir, frames, config.max_points, progress_cb)
 
     if config.image_channel:
-        frames = _load_kitti_npys(seq_dir / config.image_channel)
+        frames = _load_channel_npys(seq_dir / config.image_channel)
         if frames:
             _write_images(mission_dir, frames, progress_cb)
 
     if config.odometry_channel:
-        odom_frames = _load_kitti_odom(
+        odom_frames = _load_channel_odom(
             seq_dir / config.odometry_channel,
             channels_cfg.get(config.odometry_channel, {}),
         )
@@ -243,14 +243,14 @@ def _write_trajectory(
         progress_cb("trajectory", len(odom_frames), len(odom_frames))
 
 
-# ── KITTI loaders (for export_to_mnt only) ────────────────────────────────────
+# ── Channel loaders (for export_to_mnt only) ──────────────────────────────────
 
 
-def _load_kitti_npys(channel_dir: Path) -> list[np.ndarray]:
+def _load_channel_npys(channel_dir: Path) -> list[np.ndarray]:
     return [np.load(f) for f in sorted(channel_dir.glob("*.npy"))]
 
 
-def _load_kitti_odom(channel_dir: Path, channel_cfg: dict) -> list[tuple[float, np.ndarray]]:
+def _load_channel_odom(channel_dir: Path, channel_cfg: dict) -> list[tuple[float, np.ndarray]]:
     """Load stacked odometry + timestamps.txt → list of (ts_s, array) pairs."""
     ts_path = channel_dir / "timestamps.txt"
     timestamps = np.loadtxt(ts_path) if ts_path.exists() else None

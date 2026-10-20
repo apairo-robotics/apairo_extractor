@@ -22,7 +22,7 @@ def extract_bag(
     output_dir: Path,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[Path, list[str]]:
-    """Extract selected topics from one bag to KITTI format.
+    """Extract selected topics from one bag to apairo channel directories.
 
     Args:
         bag_info: Bag metadata.

@@ -14,8 +14,8 @@ from conftest import CLOUD_POINTS, IMU_TOPIC, LIDAR_COUNT, LIDAR_TOPIC, write_ti
 zarr = pytest.importorskip("zarr")
 
 
-@pytest.mark.parametrize("keep_kitti", [True, False], ids=["from_sequence", "from_bag"])
-def test_mnt_mission_written(tmp_path, fmt, keep_kitti):
+@pytest.mark.parametrize("keep_channels", [True, False], ids=["from_sequence", "from_bag"])
+def test_mnt_mission_written(tmp_path, fmt, keep_channels):
     bag = read_bag_info(
         write_tiny_bag(tmp_path / ("seq.bag" if fmt == "ros1" else "seq"), fmt)
     )
@@ -23,7 +23,7 @@ def test_mnt_mission_written(tmp_path, fmt, keep_kitti):
     results = run_extraction(
         [bag],
         [LIDAR_TOPIC, IMU_TOPIC],
-        tmp_path / "kitti" if keep_kitti else None,
+        tmp_path / "apairo" if keep_channels else None,
         mnt_config=config,
         workers=1,
     )

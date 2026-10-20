@@ -1,7 +1,7 @@
 # Apairo Extractor
 
 Using [apairo](https://github.com/apairo-robotics/apairo), extract ROS bags into an apairo-native dataset
-(KITTI-style `.apairo` layout; Zarr WIP) — ready to load with `apairo.RawDataset`.
+(one directory per channel, described by the `.apairo` sidecar; a Zarr MNT export is in progress) — ready to load with `apairo.RawDataset`.
 It writes the `.apairo` sidecars as it goes (per-sequence `channels.yaml`,
 root `dataset.yaml`), tags each channel with its `header.frame_id`, and handles
 `/tf` / `/tf_static` (see [Transforms](#transforms)).
@@ -21,7 +21,7 @@ Run `apairo-extractor` with no arguments for the interactive TUI (equivalently
 │                                                                                                                                                                                      │
 │               E X T R A C T                                                                                                                                                          │
 │                                                                                                                                                                                      │
-│            → KITTI • ZARR                                                                                                                                                            │
+│            → .apairo • MNT                                                                                                                                                           │
 │                                                                                                                                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
@@ -43,7 +43,7 @@ You indicate the root directory of your rosbags
 
 It will extract it with the options indicated.
 
-Here it is in KITTI-style `.apairo` layout with `cmd`, `ouster` and `/tf`:
+Here it is as an apairo dataset with `cmd`, `ouster` and `/tf`:
 ```
 output/path/                          # dataset root — load with apairo.RawDataset(...)
 ├── .apairo/

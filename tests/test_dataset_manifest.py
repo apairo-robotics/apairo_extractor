@@ -22,7 +22,7 @@ def test_is_supported_msgtype():
     assert not is_supported_msgtype("std_msgs/msg/String")
 
 
-def test_manifest_written_on_kitti_extraction(tmp_path, fmt):
+def test_manifest_written_on_apairo_extraction(tmp_path, fmt):
     bags = _two_bags(tmp_path / "bags", fmt)
     out = tmp_path / "my_dataset"
     run_extraction(bags, [LIDAR_TOPIC, IMU_TOPIC], out, workers=1)

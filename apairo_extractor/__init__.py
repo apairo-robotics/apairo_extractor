@@ -1,4 +1,4 @@
-"""apairo_extractor — extract ROS bags to KITTI/MNT with optional preprocessing.
+"""apairo_extractor — extract ROS bags to an apairo dataset and/or MNT, with optional preprocessing.
 
 Public API:
     >>> from pathlib import Path
