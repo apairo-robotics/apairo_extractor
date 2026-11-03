@@ -100,6 +100,25 @@ dispatcher (same command, plugin-discovered — no extra dependency).
 Applying transforms (reframing point clouds, etc.) is a downstream concern, not
 the extractor's job — it only stores the transforms faithfully.
 
+## Timestamps and frames
+
+Every channel, `/tf` edges included, is stamped with the bag's record time
+(when the recorder received the message), so all channels of a sequence share
+one clock. Header stamps are not used: in a simulator bag they are sim time
+while the record time is wall time, and the two run at different rates.
+
+A channel's `frame` is its messages' `header.frame_id`. If that frame changes
+within a topic, the channel gets no frame and the frames seen are listed under
+`frame_ids` in its `metadata.yaml`.
+
+## Images
+
+`sensor_msgs/Image` is decoded by its `encoding`: `mono8/16`, `rgb8/16`,
+`bgr8/16` (reordered to RGB), `rgba8/16`, `bgra8/16`, raw Bayer, and the
+generic `<8U|8S|16U|16S|32S|32F|64F>C<n>` (e.g. a `32FC1` depth image is stored
+as float32, a `32SC1` label image as int32). Any other encoding raises an error
+naming the topic. The encoding is recorded in the channel's `metadata.yaml`.
+
 ## Process
 
 Can directly take into account preprocess functions from apairo.

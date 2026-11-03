@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -14,6 +15,8 @@ from apairo_extractor.converters import (
     pointcloud2_field_names,
     msgtype_short,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def extract_bag(
@@ -56,7 +59,10 @@ def extract_bag(
     seq_data: dict[str, list[tuple[int, np.ndarray]]] = {}
     msgtypes: dict[str, str] = {}
     pc2_fields: dict[str, list[str]] = {}
-    frame_ids: dict[str, str] = {}
+    # Every header frame_id seen per topic: a channel is labelled with a frame
+    # only if all its messages agree on it.
+    frame_ids: dict[str, list[str]] = {}
+    encodings: dict[str, list[str]] = {}
     # TF: dynamic edges -> one pose channel per (source, parent, child);
     # static edges (/tf_static) -> calibration (time-independent, not channels).
     tf_edges: dict[tuple[str, str, str], list[tuple[float, np.ndarray]]] = {}
@@ -89,21 +95,30 @@ def extract_bag(
             # demultiplex them into per-edge pose streams instead of one channel.
             if msgtype_short(conn.msgtype) == "TFMessage":
                 tf_topics.add(topic)
-                _accumulate_tf(msg, topic, tf_edges, tf_static, tf_produced)
+                _accumulate_tf(msg, topic, timestamp_ns, tf_edges, tf_static, tf_produced)
                 done += 1
                 if progress_cb and done % 50 == 0:
                     progress_cb(done, total)
                 continue
 
-            # Coordinate frame of the channel, from the first message's header
-            # (ROS1 leading slash stripped). Headerless messages leave it empty.
-            if topic not in frame_ids:
-                hdr = getattr(msg, "header", None)
-                fid = getattr(hdr, "frame_id", "") if hdr is not None else ""
-                fid = fid.strip() if isinstance(fid, str) else ""
-                frame_ids[topic] = fid[1:] if fid.startswith("/") else fid
+            # Coordinate frame of the channel, from the message headers (ROS1
+            # leading slash stripped). Headerless messages leave it empty.
+            hdr = getattr(msg, "header", None)
+            fid = getattr(hdr, "frame_id", "") if hdr is not None else ""
+            fid = _strip_slash(fid) if isinstance(fid, str) else ""
+            seen = frame_ids.setdefault(topic, [])
+            if fid not in seen:
+                seen.append(fid)
+            enc = getattr(msg, "encoding", None)
+            if isinstance(enc, str) and msgtype_short(conn.msgtype) == "Image":
+                seen_enc = encodings.setdefault(topic, [])
+                if enc not in seen_enc:
+                    seen_enc.append(enc)
 
-            arr = convert_message(msg, conn.msgtype)
+            try:
+                arr = convert_message(msg, conn.msgtype)
+            except ValueError as exc:
+                raise ValueError(f"{topic} ({conn.msgtype}): {exc}") from exc
             if arr is not None:
                 if is_frame_type(conn.msgtype):
                     channel_dir = seq_dir / topic_to_dir(topic)
@@ -143,8 +158,9 @@ def extract_bag(
             _write_channel_metadata(
                 channel_dir, topic, msgtype,
                 frame_counts[topic], pc2_fields.get(topic),
+                frame_ids=frame_ids.get(topic), encodings=encodings.get(topic),
             )
-            register_raw_channel(seq_dir, dir_name, "npys", frame=frame_ids.get(topic) or None)
+            register_raw_channel(seq_dir, dir_name, "npys", frame=_channel_frame(topic, frame_ids))
 
         elif topic in seq_data and seq_data[topic]:
             channel_dir.mkdir(exist_ok=True)
@@ -153,8 +169,9 @@ def extract_bag(
             stacked = np.stack([arr for _, arr in frames])
             np.save(channel_dir / f"{dir_name}.npy", stacked)
             np.savetxt(channel_dir / "timestamps.txt", timestamps)
-            _write_channel_metadata(channel_dir, topic, msgtype, len(frames))
-            register_raw_channel(seq_dir, dir_name, "npy", frame=frame_ids.get(topic) or None)
+            _write_channel_metadata(channel_dir, topic, msgtype, len(frames),
+                                    frame_ids=frame_ids.get(topic))
+            register_raw_channel(seq_dir, dir_name, "npy", frame=_channel_frame(topic, frame_ids))
 
         else:
             skipped.append(topic)
@@ -167,6 +184,22 @@ def extract_bag(
     return seq_dir, skipped
 
 
+def _channel_frame(topic: str, frame_ids: dict[str, list[str]]) -> str | None:
+    """The topic's frame if every message carried the same one, else None.
+
+    A topic whose header frame_id changes (or is sometimes empty) gets no
+    channel frame rather than the first message's: the frames seen are listed
+    in its metadata.yaml instead.
+    """
+    seen = frame_ids.get(topic, [])
+    if len(seen) == 1:
+        return seen[0] or None
+    if len(seen) > 1:
+        logger.warning("%s: header frame_id varies across messages (%s); "
+                       "channel left without a frame", topic, ", ".join(map(repr, seen)))
+    return None
+
+
 def _strip_slash(name: str) -> str:
     name = (name or "").strip()
     return name[1:] if name.startswith("/") else name
@@ -177,8 +210,14 @@ def _is_static_tf_topic(topic: str) -> bool:
     return "static" in topic.rstrip("/").rsplit("/", 1)[-1]
 
 
-def _accumulate_tf(msg, topic: str, edges: dict, static: dict, produced: set) -> None:
+def _accumulate_tf(msg, topic: str, timestamp_ns: int, edges: dict, static: dict,
+                   produced: set) -> None:
     """Split a TFMessage into transform samples.
+
+    Dynamic samples are stamped with the message's record time
+    (``timestamp_ns``), the clock of every other extracted channel -- not the
+    transform header stamp, which can be another clock entirely (sim time in
+    a simulator bag recorded on wall time).
 
     Dynamic edges (``/tf``) accumulate into ``edges`` keyed by *source topic*
     (preserved verbatim, never merged/dropped). Static edges (``/tf_static``)
@@ -198,9 +237,7 @@ def _accumulate_tf(msg, topic: str, edges: dict, static: dict, produced: set) ->
         if is_static:
             static[(parent, child)] = pose
         else:
-            stamp = ts.header.stamp
-            t = stamp.sec + stamp.nanosec * 1e-9
-            edges.setdefault((topic, parent, child), []).append((t, pose))
+            edges.setdefault((topic, parent, child), []).append((timestamp_ns / 1e9, pose))
 
 
 def _write_one_edge(seq_dir: Path, topic: str, parent: str, child: str, samples: list) -> None:
@@ -259,11 +296,17 @@ def _write_channel_metadata(
     msgtype: str,
     count: int,
     pc2_fields: list[str] | None = None,
+    frame_ids: list[str] | None = None,
+    encodings: list[str] | None = None,
 ) -> None:
     import yaml
     meta: dict = {"topic": topic, "msgtype": msgtype, "count": count}
     if pc2_fields:
         meta["fields"] = pc2_fields
+    if frame_ids and len(frame_ids) > 1:
+        meta["frame_ids"] = sorted(frame_ids)
+    if encodings:
+        meta["encoding"] = encodings
     with open(channel_dir / "metadata.yaml", "w") as f:
         yaml.dump(meta, f, default_flow_style=False)
 

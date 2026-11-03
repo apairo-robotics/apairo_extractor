@@ -203,16 +203,20 @@ def _write_images(
     frames: list[np.ndarray],
     progress_cb,
 ) -> None:
+    # images.tar holds 8-bit JPEGs: a depth / 16-bit / float image has no
+    # faithful encoding there, so it is refused rather than clipped to uint8.
     n = len(frames)
-    clipped = []
     for i, arr in enumerate(frames):
         if arr.dtype != np.uint8:
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-        clipped.append(arr)
+            raise ValueError(
+                f"MNT images.tar stores 8-bit (uint8) JPEG images; frame {i} is "
+                f"{arr.dtype} {arr.shape} (depth or high-bit-depth image?). "
+                f"Export it as a channel instead of images.tar."
+            )
         if progress_cb:
             progress_cb("image", i + 1, n)
 
-    stacked = np.stack(clipped)  # (N, H, W[, C])
+    stacked = np.stack(frames)  # (N, H, W[, C])
     WRITERS["img"]().write(stacked, mission_dir / "images.tar")
 
 
