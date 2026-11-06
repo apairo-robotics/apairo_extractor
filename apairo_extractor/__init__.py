@@ -9,6 +9,10 @@ Public API:
 ``run_extraction`` is UI-agnostic; pass ``on_progress`` / ``on_bag_done``
 callbacks to observe progress, or drive the interactive TUI / headless CLI via
 the ``apairo-extractor`` command.
+
+``BagDataset`` reads a bag in place, as an apairo dataset, with the same
+conversion and timestamps as an extraction: the source to replay a deployed
+chain on (``deployed.on(BagDataset(path))``).
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from apairo_extractor.bag import (
     read_bag_info,
     topics_in_bag,
 )
+from apairo_extractor.bag_dataset import BagDataset
 from apairo_extractor.export_mnt import MntExportConfig
 from apairo_extractor.extract import extract_bag
 from apairo_extractor.runner import resolve_workers, run_extraction
@@ -27,6 +32,7 @@ from apairo_extractor.runner import resolve_workers, run_extraction
 __version__ = "0.1.0"
 
 __all__ = [
+    "BagDataset",
     "BagInfo",
     "TopicInfo",
     "MntExportConfig",

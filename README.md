@@ -72,6 +72,24 @@ ds = apairo.RawDataset("output/path")     # whole dataset (all sequences)
 ds.calibration                            # static extrinsics from /tf_static
 ```
 
+## Read a bag in place — `BagDataset`
+
+No extraction step: the topics of a bag as an asynchronous apairo dataset,
+converted and stamped exactly as an extraction would, so a bag read in place
+and the same bag extracted give the same samples.
+
+```python
+from apairo_extractor import BagDataset
+
+bag = BagDataset("run_42", topics=["/ouster/points", "/odom"])   # channels: ouster_points, odom
+bag = BagDataset("run_42", topics={"lidar": "/ouster/points"})  # or name them
+frames = bag.synchronize(reference="ouster_points")
+```
+
+It is the source to replay a deployed chain on, to check a deployment
+against a recording (`deployed.on(bag)`, see apairo's *Inference &
+Deployment*). Messages are held in memory: choose the topics you need.
+
 ## CLI
 
 Interactive TUI (no arguments) or fully headless with flags:
