@@ -7,7 +7,9 @@ installation is needed:
 - **Extract** a bag to an apairo dataset with `apairo-extractor` (below);
 - **read it in place** with `BagDataset`, converted and stamped as an
   extraction would, to replay a deployed chain on it (see
-  [Read a bag in place](#read-a-bag-in-place--bagdataset)).
+  [Read a bag in place](#read-a-bag-in-place--bagdataset));
+- **run a deployed chain in a live ROS 2 node** with `apairo_ros.live`
+  (see [Live](#live--a-deployed-chain-in-a-ros-2-node)).
 
 ## Installation
 
@@ -109,6 +111,67 @@ frames = bag.synchronize(reference="ouster_points")
 It is the source to replay a deployed chain on, to check a deployment
 against a recording (`deployed.on(bag)`, see apairo's *Inference &
 Deployment*). Messages are held in memory: choose the topics you need.
+
+## Live — a deployed chain in a ROS 2 node
+
+The preprocessing a model was trained on, unchanged, on the robot. Needs
+apairo ≥ 0.10 (`inference()`, `load_chain()`).
+
+```python
+# training side
+deployed = train.inference(["trav_pred"])     # no augmentations, only what the output needs
+deployed.on(BagDataset("run_42.mcap"))        # parity check on a recording
+deployed.save("trav_chain.json")              # beside the checkpoint
+```
+
+```python
+# robot side
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import PointCloud2
+from nav_msgs.msg import Odometry
+from apairo import load_chain
+from apairo_ros.live import ChainNode
+
+rclpy.init()
+node = Node("traversability")
+ChainNode(
+    node,
+    load_chain("trav_chain.json", trusted=["my_robot"]),
+    topics={"ouster_points": ("/ouster/points", PointCloud2),
+            "odom": ("/odom", Odometry)},
+    on_output=lambda frame: publish(frame.data["trav_pred"]),
+)
+rclpy.spin(node)
+```
+
+- **`LiveSource`** is fed one message at a time. On each message of the
+  chain's reference channel (the `synchronize(reference=...)` of the
+  training chain), it runs the chain on the recent messages it keeps and
+  returns the frame for that instant: the frame the chain gives offline on a
+  recording of the same messages. It keeps the frames the chain's windows
+  reach back to, and no more. It has no ROS dependency.
+- **`ChainNode`** subscribes to one topic per channel, converts each message
+  as an extraction does, and stamps it with the node clock on arrival, as a
+  bag stamps it when recording. A live message and a recorded one therefore
+  give the same array at the same time.
+
+A live source only runs a **causal** chain: `synchronize` with
+`method="previous"` (an interpolator or `"nearest"` needs the next event).
+`LiveSource` refuses any other chain. A message on a channel arriving after
+its reference frame was computed is not seen by that frame: expect what the
+same recording gives, with the same message order.
+
+`rclpy` is not a dependency: it comes with a ROS 2 distribution
+(`source /opt/ros/<distro>/setup.bash`), and `ChainNode` only uses the node
+it is given.
+
+**Status.** Tested without ROS: `LiveSource` against the offline chain, and
+`ChainNode` on a fake node fed a real ROS 2 bag's messages, against
+`BagDataset` on the same bag. Not yet tested in a running ROS 2 system
+(`ros2 bag play` into the node). Calibration from `/tf_static` is not read
+yet. Each frame re-runs the chain over the kept history: fine for short
+windows, an incremental evaluation is planned for high rates.
 
 ## CLI
 
