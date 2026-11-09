@@ -10,9 +10,9 @@ import warnings
 
 import numpy as np
 import pytest
-from apairo_extractor import BagDataset
-from apairo_extractor.bag import read_bag_info
-from apairo_extractor.extract import extract_bag
+from apairo_ros import BagDataset
+from apairo_ros.bag import read_bag_info
+from apairo_ros.extract import extract_bag
 from conftest import CLOUD_POINTS, IMU_COUNT, LIDAR_COUNT
 
 apairo = pytest.importorskip("apairo")

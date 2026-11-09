@@ -2,13 +2,13 @@
 
 ``BagDataset`` reads the chosen topics of a ROS 1 (``.bag``) or ROS 2
 (directory, ``.db3`` / ``.mcap``) bag into an asynchronous apairo dataset.
-Each message is converted exactly as :func:`~apairo_extractor.extract.extract_bag`
+Each message is converted exactly as :func:`~apairo_ros.extract.extract_bag`
 converts it, and stamped with the same time (the bag's receive time by
 default), so a bag read in place and the same bag extracted to disk give the
 same samples. That makes it the source to replay a deployed chain on::
 
     from apairo import RawDataset, load_chain
-    from apairo_extractor import BagDataset
+    from apairo_ros import BagDataset
 
     train = RawDataset("/data/extracted", keys=["ouster_points", "odom"])
     ...                                             # build and train
@@ -34,8 +34,8 @@ from pathlib import Path
 import numpy as np
 from apairo.dataset.stream import StreamDataset
 
-from apairo_extractor.bag import topic_to_dir
-from apairo_extractor.converters import (
+from apairo_ros.bag import topic_to_dir
+from apairo_ros.converters import (
     convert_message,
     is_supported_msgtype,
     msgtype_short,

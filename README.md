@@ -1,4 +1,24 @@
-# Apairo Extractor
+# apairo-ros
+
+ROS for [apairo](https://github.com/apairo-robotics/apairo). ROS 1 and ROS 2
+bags are read with [rosbags](https://gitlab.com/ternaris/rosbags), so no ROS
+installation is needed:
+
+- **Extract** a bag to an apairo dataset with `apairo-extractor` (below);
+- **read it in place** with `BagDataset`, converted and stamped as an
+  extraction would, to replay a deployed chain on it (see
+  [Read a bag in place](#read-a-bag-in-place--bagdataset)).
+
+## Installation
+
+```bash
+pip install apairo-ros
+pip install "apairo-ros[mnt]"           # the Zarr MNT export
+```
+
+Requires Python ≥ 3.11 and apairo ≥ 0.9.
+
+## Extraction
 
 Using [apairo](https://github.com/apairo-robotics/apairo), extract ROS bags into an apairo-native dataset
 (one directory per channel, described by the `.apairo` sidecar; a Zarr MNT export is in progress) — ready to load with `apairo.RawDataset`.
@@ -6,16 +26,6 @@ It writes the `.apairo` sidecars as it goes (per-sequence `channels.yaml`,
 root `dataset.yaml`), tags each channel with its `header.frame_id`, and handles
 `/tf` / `/tf_static` (see [Transforms](#transforms)).
 
-
-## Installation
-
-```bash
-pip install apairo-extractor
-pip install "apairo-extractor[mnt]"     # the Zarr MNT export
-```
-
-Requires Python ≥ 3.11 and apairo ≥ 0.9. Bags are read with
-[rosbags](https://gitlab.com/ternaris/rosbags): no ROS installation is needed.
 
 ## Quickstart
 
@@ -89,7 +99,7 @@ converted and stamped exactly as an extraction would, so a bag read in place
 and the same bag extracted give the same samples.
 
 ```python
-from apairo_extractor import BagDataset
+from apairo_ros import BagDataset
 
 bag = BagDataset("run_42", topics=["/ouster/points", "/odom"])   # channels: ouster_points, odom
 bag = BagDataset("run_42", topics={"lidar": "/ouster/points"})  # or name them

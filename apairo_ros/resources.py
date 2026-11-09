@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from apairo_extractor.bag import BagInfo
-from apairo_extractor.converters import convert_message, is_frame_type
+from apairo_ros.bag import BagInfo
+from apairo_ros.converters import convert_message, is_frame_type
 
 # Baseline resident memory of one worker: Python + numpy + rosbags + the reader's
 # current decompressed chunk + the peak single decoded frame (a point cloud or

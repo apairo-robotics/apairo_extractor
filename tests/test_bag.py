@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from apairo_extractor.bag import (
+from apairo_ros.bag import (
     compute_topic_coverage,
     find_bags,
     is_ros1_bag,
@@ -11,7 +11,7 @@ from apairo_extractor.bag import (
     topic_to_dir,
     topics_in_bag,
 )
-from apairo_extractor.converters import msgtype_short
+from apairo_ros.converters import msgtype_short
 
 from conftest import (
     CHATTER_COUNT,

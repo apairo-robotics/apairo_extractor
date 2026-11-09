@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import yaml
 
-from apairo_extractor.bag import read_bag_info
-from apairo_extractor.converters import is_supported_msgtype
-from apairo_extractor.runner import run_extraction
+from apairo_ros.bag import read_bag_info
+from apairo_ros.converters import is_supported_msgtype
+from apairo_ros.runner import run_extraction
 
 from conftest import CHATTER_TOPIC, IMU_TOPIC, LIDAR_TOPIC, write_tiny_bag
 

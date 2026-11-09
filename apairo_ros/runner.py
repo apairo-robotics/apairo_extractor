@@ -17,10 +17,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
-from apairo_extractor.bag import BagInfo, topic_to_dir
-from apairo_extractor.export_mnt import MntExportConfig, export_to_mnt, extract_bag_to_mnt
-from apairo_extractor.extract import extract_bag
-from apairo_extractor.preprocess import PreprocessConfig, run_preprocessors
+from apairo_ros.bag import BagInfo, topic_to_dir
+from apairo_ros.export_mnt import MntExportConfig, export_to_mnt, extract_bag_to_mnt
+from apairo_ros.extract import extract_bag
+from apairo_ros.preprocess import PreprocessConfig, run_preprocessors
 
 # Progress within one bag: report(phase, done, total). ``phase`` is a short
 # label ("extract", "preprocess", "MNT …", "done"); each pipeline phase resets

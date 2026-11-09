@@ -52,4 +52,4 @@ jobs:
         run: |
           python -m venv /tmp/fresh
           /tmp/fresh/bin/pip install dist/*.whl
-          cd /tmp && /tmp/fresh/bin/python -c "import apairo_extractor; print(apairo_extractor.__name__, 'imports')"
+          cd /tmp && /tmp/fresh/bin/python -c "import apairo_ros; print(apairo_ros.__name__, 'imports')"

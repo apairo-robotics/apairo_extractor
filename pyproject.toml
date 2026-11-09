@@ -3,16 +3,16 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "apairo-extractor"
+name = "apairo-ros"
 version = "0.1.0"
-description = "Extract ROS bags to an apairo dataset, or read them in place"
+description = "ROS for apairo: extract bags to an apairo dataset, or read them in place"
 readme = "README.md"
 authors = [
   { name = "Augustin Bresset", email = "augustin.bresset@gmail.com" },
 ]
 license = { text = "MIT" }
 requires-python = ">=3.11"
-keywords = ["apairo", "ros", "ros2", "rosbag", "mcap", "robotics"]
+keywords = ["apairo", "ros", "ros1", "ros2", "rosbag", "mcap", "robotics"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -34,24 +34,24 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://apairo-robotics.github.io/"
-Repository = "https://github.com/apairo-robotics/apairo_extractor"
-Issues = "https://github.com/apairo-robotics/apairo_extractor/issues"
+Repository = "https://github.com/apairo-robotics/apairo_ros"
+Issues = "https://github.com/apairo-robotics/apairo_ros/issues"
 
 [project.optional-dependencies]
 mnt = ["zarr>=2.0", "Pillow"]
 dev = ["pytest>=7.0", "Pillow"]
 
 [project.scripts]
-apairo-extractor = "apairo_extractor.cli:main"
+apairo-extractor = "apairo_ros.cli:main"
 
 # Ecosystem dispatch: enables `apairo extractor ...` via apairo's plugin
 # discovery (apairo never depends on this package -- it finds it when installed).
 [project.entry-points."apairo.cli_plugins"]
-extractor = "apairo_extractor.cli:main"
+extractor = "apairo_ros.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["apairo_extractor*"]
+include = ["apairo_ros*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

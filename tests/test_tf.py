@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from apairo_extractor.bag import read_bag_info
-from apairo_extractor.extract import extract_bag
+from apairo_ros.bag import read_bag_info
+from apairo_ros.extract import extract_bag
 
 from conftest import (
     TF_COUNT, TF_STATIC_TOPIC, TF_TOPIC, write_tf_bag, write_tf_bag_with_static,
