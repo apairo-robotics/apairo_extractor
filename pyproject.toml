@@ -5,17 +5,37 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "apairo-extractor"
 version = "0.1.0"
-description = "Extract ROS bags to an apairo dataset, with optional preprocessing"
+description = "Extract ROS bags to an apairo dataset, or read them in place"
+readme = "README.md"
+authors = [
+  { name = "Augustin Bresset", email = "augustin.bresset@gmail.com" },
+]
+license = { text = "MIT" }
 requires-python = ">=3.11"
+keywords = ["apairo", "ros", "ros2", "rosbag", "mcap", "robotics"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
 dependencies = [
     "rosbags>=0.9.0",
     "numpy",
     "PyYAML",
     "questionary>=2.0.0",
     "rich>=13.0.0",
-    
-    "apairo>=0.6",
+    "apairo>=0.9",
 ]
+
+[project.urls]
+Homepage = "https://apairo-robotics.github.io/"
+Repository = "https://github.com/apairo-robotics/apairo_extractor"
+Issues = "https://github.com/apairo-robotics/apairo_extractor/issues"
 
 [project.optional-dependencies]
 mnt = ["zarr>=2.0", "Pillow"]

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # publish.yml runs the whole CI on a release tag before it uploads.
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Against apairo from PyPI: the version a user installs.
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest
+
+  package:
+    # The wheel installs on its own and imports, outside the source tree.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and check
+        run: |
+          pip install build twine
+          python -m build
+          twine check --strict dist/*
+
+      - name: Install the wheel in a fresh environment
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install dist/*.whl
+          cd /tmp && /tmp/fresh/bin/python -c "import apairo_extractor; print(apairo_extractor.__name__, 'imports')"

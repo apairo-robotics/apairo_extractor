@@ -7,6 +7,16 @@ root `dataset.yaml`), tags each channel with its `header.frame_id`, and handles
 `/tf` / `/tf_static` (see [Transforms](#transforms)).
 
 
+## Installation
+
+```bash
+pip install apairo-extractor
+pip install "apairo-extractor[mnt]"     # the Zarr MNT export
+```
+
+Requires Python ≥ 3.11 and apairo ≥ 0.9. Bags are read with
+[rosbags](https://gitlab.com/ternaris/rosbags): no ROS installation is needed.
+
 ## Quickstart
 
 Run `apairo-extractor` with no arguments for the interactive TUI (equivalently

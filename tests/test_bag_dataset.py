@@ -16,8 +16,10 @@ from apairo_extractor.extract import extract_bag
 from conftest import CLOUD_POINTS, IMU_COUNT, LIDAR_COUNT
 
 apairo = pytest.importorskip("apairo")
-if not hasattr(apairo.RawDataset, "inference"):
-    pytest.skip("installed apairo has no inference()", allow_module_level=True)
+needs_inference = pytest.mark.skipif(
+    not hasattr(apairo.RawDataset, "inference"),
+    reason="installed apairo has no inference() (apairo >= 0.10)",
+)
 
 
 def test_reads_every_convertible_topic(tiny_bag):
@@ -76,6 +78,7 @@ class Score:
         return s
 
 
+@needs_inference
 def test_a_chain_trained_on_extracted_data_replays_on_the_bag(tiny_bag, tmp_path):
     seq_dir, _ = extract_bag(read_bag_info(tiny_bag), ["/lidar", "/imu"], tmp_path / "out")
     with warnings.catch_warnings():
