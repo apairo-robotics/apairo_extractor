@@ -35,7 +35,7 @@ _MNT_PATHS: dict[str, tuple[str, ...]] = {
 }
 
 if TYPE_CHECKING:
-    from apairo_extractor.bag import BagInfo
+    from apairo_ros.bag import BagInfo
 
 
 @dataclass
@@ -74,7 +74,7 @@ def extract_bag_to_mnt(
         progress_cb: Optional callback(stage, done, total).
     """
     from rosbags.highlevel import AnyReader
-    from apairo_extractor.converters import convert_message
+    from apairo_ros.converters import convert_message
 
     mission_dir.mkdir(parents=True, exist_ok=True)
 

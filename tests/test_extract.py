@@ -5,8 +5,8 @@ import numpy as np
 import pytest
 import yaml
 
-from apairo_extractor.bag import read_bag_info
-from apairo_extractor.extract import extract_bag
+from apairo_ros.bag import read_bag_info
+from apairo_ros.extract import extract_bag
 
 from conftest import (
     CLOUD_POINTS,

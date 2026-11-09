@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from apairo_extractor.bag import BagInfo, TopicInfo, read_bag_info
-from apairo_extractor.resources import (
+from apairo_ros.bag import BagInfo, TopicInfo, read_bag_info
+from apairo_ros.resources import (
     BASE_RAM_MB,
     HDD_WORKER_CAP,
     PER_WORKER_RAM_MB,

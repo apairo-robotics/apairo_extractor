@@ -1,4 +1,24 @@
-# Apairo Extractor
+# apairo-ros
+
+ROS for [apairo](https://github.com/apairo-robotics/apairo). ROS 1 and ROS 2
+bags are read with [rosbags](https://gitlab.com/ternaris/rosbags), so no ROS
+installation is needed:
+
+- **Extract** a bag to an apairo dataset with `apairo-extractor` (below);
+- **read it in place** with `BagDataset`, converted and stamped as an
+  extraction would, to replay a deployed chain on it (see
+  [Read a bag in place](#read-a-bag-in-place--bagdataset)).
+
+## Installation
+
+```bash
+pip install apairo-ros
+pip install "apairo-ros[mnt]"           # the Zarr MNT export
+```
+
+Requires Python ≥ 3.11 and apairo ≥ 0.9.
+
+## Extraction
 
 Using [apairo](https://github.com/apairo-robotics/apairo), extract ROS bags into an apairo-native dataset
 (one directory per channel, described by the `.apairo` sidecar; a Zarr MNT export is in progress) — ready to load with `apairo.RawDataset`.
@@ -72,6 +92,24 @@ ds = apairo.RawDataset("output/path")     # whole dataset (all sequences)
 ds.calibration                            # static extrinsics from /tf_static
 ```
 
+## Read a bag in place — `BagDataset`
+
+No extraction step: the topics of a bag as an asynchronous apairo dataset,
+converted and stamped exactly as an extraction would, so a bag read in place
+and the same bag extracted give the same samples.
+
+```python
+from apairo_ros import BagDataset
+
+bag = BagDataset("run_42", topics=["/ouster/points", "/odom"])   # channels: ouster_points, odom
+bag = BagDataset("run_42", topics={"lidar": "/ouster/points"})  # or name them
+frames = bag.synchronize(reference="ouster_points")
+```
+
+It is the source to replay a deployed chain on, to check a deployment
+against a recording (`deployed.on(bag)`, see apairo's *Inference &
+Deployment*). Messages are held in memory: choose the topics you need.
+
 ## CLI
 
 Interactive TUI (no arguments) or fully headless with flags:
@@ -82,8 +120,15 @@ apairo-extractor -i /input/path -l                      # discover bags + topics
 apairo-extractor -i /input/path -o /output/path -t /ouster /cmd /tf /tf_static
 ```
 
-`apairo-extractor` is also exposed as `apairo extractor` through apairo's CLI
-dispatcher (same command, plugin-discovered — no extra dependency).
+The same command has four names, all installed by the package:
+
+| Name | Where |
+|---|---|
+| `apairo ros extract` | through apairo's CLI (plugin-discovered, no extra dependency) |
+| `apairo-ros extract` | on its own |
+| `apairo extractor`, `apairo-extractor` | the names it had before the package became `apairo-ros`; they stay |
+
+`apairo ros` with no argument lists the package's commands.
 
 ## Transforms
 

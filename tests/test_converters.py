@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from apairo_extractor import converters as cv
+from apairo_ros import converters as cv
 
 
 def ns(**kw):

@@ -24,7 +24,7 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich import box
 from rich.text import Text
 
-from apairo_extractor.bag import (
+from apairo_ros.bag import (
     BagInfo,
     read_bag_info,
     find_bags,
@@ -33,10 +33,10 @@ from apairo_extractor.bag import (
     get_topic_info,
     topics_in_bag,
 )
-from apairo_extractor.export_mnt import MntExportConfig
-from apairo_extractor.preprocess import PreprocessConfig, discover_preprocessors
-from apairo_extractor.runner import resolve_workers, run_extraction
-from apairo_extractor.resources import (
+from apairo_ros.export_mnt import MntExportConfig
+from apairo_ros.preprocess import PreprocessConfig, discover_preprocessors
+from apairo_ros.runner import resolve_workers, run_extraction
+from apairo_ros.resources import (
     SystemResources,
     estimate_output_mb,
     estimate_worker_ram_mb,
@@ -1009,9 +1009,9 @@ def _run_headless(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(prog: str = "apairo-extractor") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="apairo-extractor",
+        prog=prog,
         description="Extract ROS bags to an apairo dataset and/or MNT. Run with no "
                     "arguments for the interactive TUI, or pass --input for headless extraction.",
     )
@@ -1037,15 +1037,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _version() -> str:
-    from apairo_extractor import __version__
+    from apairo_ros import __version__
     return __version__
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    args = _build_parser().parse_args(argv)
+def main(argv: Optional[list[str]] = None, prog: str = "apairo-extractor") -> None:
+    args = _build_parser(prog).parse_args(argv)
     try:
         if args.input is not None:
             sys.exit(_run_headless(args))

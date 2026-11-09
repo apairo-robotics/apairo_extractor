@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import yaml
 
-from apairo_extractor.bag import read_bag_info
-from apairo_extractor.runner import resolve_workers, run_extraction
+from apairo_ros.bag import read_bag_info
+from apairo_ros.runner import resolve_workers, run_extraction
 
 from conftest import LIDAR_TOPIC, IMU_TOPIC, write_tiny_bag
 

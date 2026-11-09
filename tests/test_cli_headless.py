@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from apairo_extractor.cli import (
+from apairo_ros.cli import (
     _build_parser,
     _load_bags,
     _parse_preprocess_spec,
@@ -34,7 +34,7 @@ class _DummyPreproc:
 
 
 def test_public_api_exports():
-    import apairo_extractor as pkg
+    import apairo_ros as pkg
 
     for name in ("run_extraction", "extract_bag", "read_bag_info",
                  "find_bags", "BagInfo", "MntExportConfig"):

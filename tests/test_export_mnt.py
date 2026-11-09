@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from apairo_extractor import MntExportConfig
-from apairo_extractor.bag import read_bag_info
-from apairo_extractor.runner import run_extraction
+from apairo_ros import MntExportConfig
+from apairo_ros.bag import read_bag_info
+from apairo_ros.runner import run_extraction
 
 from conftest import CLOUD_POINTS, IMU_TOPIC, LIDAR_COUNT, LIDAR_TOPIC, write_tiny_bag
 
