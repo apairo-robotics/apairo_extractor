@@ -1009,9 +1009,9 @@ def _run_headless(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(prog: str = "apairo-extractor") -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="apairo-extractor",
+        prog=prog,
         description="Extract ROS bags to an apairo dataset and/or MNT. Run with no "
                     "arguments for the interactive TUI, or pass --input for headless extraction.",
     )
@@ -1044,8 +1044,8 @@ def _version() -> str:
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    args = _build_parser().parse_args(argv)
+def main(argv: Optional[list[str]] = None, prog: str = "apairo-extractor") -> None:
+    args = _build_parser(prog).parse_args(argv)
     try:
         if args.input is not None:
             sys.exit(_run_headless(args))

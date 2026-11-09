@@ -120,8 +120,15 @@ apairo-extractor -i /input/path -l                      # discover bags + topics
 apairo-extractor -i /input/path -o /output/path -t /ouster /cmd /tf /tf_static
 ```
 
-`apairo-extractor` is also exposed as `apairo extractor` through apairo's CLI
-dispatcher (same command, plugin-discovered — no extra dependency).
+The same command has four names, all installed by the package:
+
+| Name | Where |
+|---|---|
+| `apairo ros extract` | through apairo's CLI (plugin-discovered, no extra dependency) |
+| `apairo-ros extract` | on its own |
+| `apairo extractor`, `apairo-extractor` | the names it had before the package became `apairo-ros`; they stay |
+
+`apairo ros` with no argument lists the package's commands.
 
 ## Transforms
 

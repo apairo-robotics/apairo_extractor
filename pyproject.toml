@@ -43,11 +43,13 @@ dev = ["pytest>=7.0", "Pillow"]
 
 [project.scripts]
 apairo-extractor = "apairo_ros.cli:main"
+apairo-ros = "apairo_ros.ros_cli:console"
 
-# Ecosystem dispatch: enables `apairo extractor ...` via apairo's plugin
+# Ecosystem dispatch: enables `apairo extractor ...` and `apairo ros ...` via apairo's plugin
 # discovery (apairo never depends on this package -- it finds it when installed).
 [project.entry-points."apairo.cli_plugins"]
 extractor = "apairo_ros.cli:main"
+ros = "apairo_ros.ros_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
