@@ -100,8 +100,9 @@ def test_pointcloud2_empty():
     assert arr.shape == (0, 3)
 
 
-def test_pointcloud2_truncated_data_is_clamped():
-    # 2 points' worth of header but only 1.5 points of data -> clamp to 1 point.
+def test_pointcloud2_truncated_data_is_refused():
+    # 2 points declared, 1.5 points of data: reading it as 1 point would hide a
+    # corrupt message (and read a padded cloud as other points).
     pts = np.array([[1.0, 2.0, 3.0]], dtype=np.float32)
     raw = pts.tobytes() + b"\x00\x00\x00\x00\x00\x00"  # 6 stray bytes
     fields = [
@@ -110,9 +111,8 @@ def test_pointcloud2_truncated_data_is_clamped():
         ns(name="z", offset=8, datatype=7, count=1),
     ]
     msg = ns(width=2, height=1, point_step=12, is_bigendian=False, fields=fields, data=raw)
-    arr = cv.convert_message(msg, "sensor_msgs/msg/PointCloud2")
-    assert arr.shape == (1, 3)
-    np.testing.assert_allclose(arr, pts)
+    with pytest.raises(ValueError, match="truncated"):
+        cv.convert_message(msg, "sensor_msgs/msg/PointCloud2")
 
 
 def _img_msg(data: bytes, *, w: int, h: int, channels: int, encoding: str):

@@ -324,10 +324,12 @@ def _run_extraction(
     output_dir: Optional[Path],
     mnt_config: Optional[MntExportConfig] = None,
     workers: Optional[int] = None,
-) -> None:
-    """Run an extraction with a live rich progress display (the TUI/CLI front)."""
+) -> int:
+    """Run an extraction with a live rich progress display (the TUI/CLI front).
+    Returns the number of bags that failed."""
     mnt_only = output_dir is None
     all_skipped: list[tuple[str, str]] = []
+    failed: list[str] = []
 
     with Progress(
         SpinnerColumn(),
@@ -357,6 +359,7 @@ def _run_extraction(
 
         def on_bag_done(name, skipped, err):
             if err:
+                failed.append(name)
                 console.print(f"[red]Error extracting {name}: {err}[/red]")
             for s in skipped:
                 all_skipped.append((name, s))
@@ -372,22 +375,21 @@ def _run_extraction(
         )
 
     console.print()
+    ok = len(bags) - len(failed)
+    head = "[bold green]Done![/bold green]" if not failed else "[bold yellow]Done, with errors.[/bold yellow]"
     if not mnt_only:
-        console.print(
-            f"[bold green]Done![/bold green]  "
-            f"{len(bags)} sequence(s) → [cyan]{output_dir}[/cyan]"
-        )
+        console.print(f"{head}  {ok} sequence(s) → [cyan]{output_dir}[/cyan]")
     if mnt_config is not None:
-        console.print(
-            f"[bold green]Done![/bold green]  "
-            f"{len(bags)} mission(s) → [cyan]{mnt_config.output_dir}[/cyan]"
-        )
+        console.print(f"{head}  {ok} mission(s) → [cyan]{mnt_config.output_dir}[/cyan]")
+    if failed:
+        console.print(f"[red]{len(failed)} bag(s) failed:[/red] {', '.join(failed)}")
 
     if all_skipped:
         console.print()
-        console.print("[yellow]Skipped (missing or unsupported):[/yellow]")
+        console.print("[yellow]Skipped (missing, unsupported, or partly unreadable):[/yellow]")
         for bag_name, topic in all_skipped:
             console.print(f"  [dim]{bag_name}[/dim]  {topic}")
+    return len(failed)
 
 
 # ── Interactive TUI (state machine) ───────────────────────────────────────────
@@ -1004,9 +1006,13 @@ def _run_headless(args: argparse.Namespace) -> int:
         f"{f' · {len(preprocess_configs)} preprocessor(s)' if preprocess_configs else ''}"
         f" · workers={args.workers or resolve_workers(len(bags))}"
     )
-    _run_extraction(bags, args.topics, preprocess_configs, output_dir, mnt_config,
-                    workers=args.workers)
-    return 0
+    try:
+        n_failed = _run_extraction(bags, args.topics, preprocess_configs, output_dir,
+                                   mnt_config, workers=args.workers)
+    except ValueError as exc:  # two bags to one sequence, refused before any work
+        console.print(f"[red]{exc}[/red]")
+        return 1
+    return 1 if n_failed else 0
 
 
 def _build_parser(prog: str = "apairo-extractor") -> argparse.ArgumentParser:

@@ -108,13 +108,38 @@ def _load_seq(seq_dir: Path, channel: str) -> np.ndarray:
     return np.load(files[0])
 
 
+def _clock(ts_path) -> np.ndarray:
+    """A channel's timestamps as a 1-D array (a one-line file included)."""
+    return np.atleast_1d(np.loadtxt(ts_path)) if ts_path.exists() else np.array([])
+
+
+def _require_one_clock(seq_dir, cfg, ref: str, ref_clock: np.ndarray) -> None:
+    """A preprocessor with several inputs gets row ``i`` of each: that is the
+    same instant only if the channels share one clock. Channels at different
+    rates would be paired by position, each frame with an unrelated sample."""
+    for channel in dict.fromkeys(cfg.key_map.values()):
+        if channel == ref:
+            continue
+        clock = _clock(seq_dir / channel / "timestamps.txt")
+        if len(clock) != len(ref_clock) or not np.allclose(clock, ref_clock, atol=1e-6):
+            raise ValueError(
+                f"Preprocessor '{cfg.output_key}' reads '{ref}' and '{channel}', "
+                f"which are not on the same clock ({len(ref_clock)} and "
+                f"{len(clock)} timestamps): they cannot be paired frame by "
+                f"frame. Synchronize them with apairo first "
+                f"(RawDataset(seq).synchronize(...)), then run the preprocessor "
+                f"on the synchronized view."
+            )
+
+
 def _run_frame(preprocessor, seq_dir, cfg, channels_meta, out_dir, progress_cb):
     from apairo.core.sample import Sample
 
     ref = _ref_channel(cfg)
     loader = channels_meta.get(ref, {}).get("loader", "npys")
     ts_path = seq_dir / ref / "timestamps.txt"
-    timestamps = np.loadtxt(ts_path) if ts_path.exists() else np.array([])
+    timestamps = _clock(ts_path)
+    _require_one_clock(seq_dir, cfg, ref, timestamps)
 
     if loader == "npys":
         n = len(list((seq_dir / ref).glob("*.npy")))
@@ -147,7 +172,8 @@ def _run_sequence(preprocessor, seq_dir, cfg, channels_meta, out_dir):
     ref = _ref_channel(cfg)
     loader = channels_meta.get(ref, {}).get("loader", "npys")
     ts_path = seq_dir / ref / "timestamps.txt"
-    timestamps = np.loadtxt(ts_path) if ts_path.exists() else np.array([])
+    timestamps = _clock(ts_path)
+    _require_one_clock(seq_dir, cfg, ref, timestamps)
 
     n = (
         len(list((seq_dir / ref).glob("*.npy")))

@@ -55,7 +55,13 @@ def is_supported_msgtype(msgtype: str) -> bool:
 
 
 def convert_message(msg, msgtype: str) -> np.ndarray | None:
-    """Convert a deserialized ROS message to numpy.  Returns None if unsupported."""
+    """Convert a deserialized ROS message to numpy.  Returns None if unsupported.
+
+    Raises:
+        ValueError: The message is of a supported type but cannot be laid out
+            as its header says (a truncated cloud, an unknown image encoding).
+            Callers count and report such messages; none is read by guessing.
+    """
     short = msgtype_short(msgtype)
 
     if short == "PointCloud2":
@@ -66,6 +72,8 @@ def convert_message(msg, msgtype: str) -> np.ndarray | None:
         return _compressed_image(msg)
     if short == "LaserScan":
         return _laser_scan(msg)
+    if short == "PointCloud":
+        return _pointcloud(msg)
     if short == "Imu":
         return _imu(msg)
     if short == "Twist":
@@ -88,62 +96,178 @@ def convert_message(msg, msgtype: str) -> np.ndarray | None:
 
 
 def pointcloud2_field_names(msg) -> list[str]:
-    return [f.name for f in msg.fields]
+    """One name per column of the converted cloud: a field with ``count > 1``
+    gives ``<name>_0 .. <name>_<count-1>``."""
+    names: list[str] = []
+    for f in msg.fields:
+        count = max(int(getattr(f, "count", 1) or 1), 1)
+        names += [f.name] if count == 1 else [f"{f.name}_{j}" for j in range(count)]
+    return names
 
 
 # ── Private converters ─────────────────────────────────────────────────────────
 
 
 def _pointcloud2(msg) -> np.ndarray:
-    n_pts = msg.width * msg.height
+    """A PointCloud2 as ``(N, C)``, one column per scalar the fields declare.
+
+    The dtype is the smallest that holds every field exactly: float32 for the
+    usual all-float32 cloud, float64 as soon as a field would lose values in
+    float32 (a uint32 or float64 per-point time, a range in millimetres).
+    Row padding of an organized cloud (``row_step > width * point_step``) is
+    skipped. A payload that does not hold the points the header declares is
+    refused rather than read as fewer, or other, points.
+    """
+    fields = list(msg.fields)
+    dtypes = []
+    for f in fields:
+        base = _PC2_DTYPE.get(f.datatype)
+        if base is None:
+            raise ValueError(
+                f"PointCloud2 field '{f.name}' has unknown datatype {f.datatype}."
+            )
+        dtypes.append(np.dtype(base))
+    counts = [max(int(getattr(f, "count", 1) or 1), 1) for f in fields]
+    n_cols = sum(counts)
+    out_dtype = np.result_type(*dtypes) if dtypes else np.dtype(np.float32)
+    if out_dtype.kind != "f":  # integer-only clouds still mix with float xyz downstream
+        out_dtype = np.result_type(out_dtype, np.float32)
+
+    width, height, step = int(msg.width), int(msg.height), int(msg.point_step)
+    n_pts = width * height
     if n_pts == 0:
-        return np.zeros((0, 3), dtype=np.float32)
+        return np.zeros((0, n_cols or 3), dtype=out_dtype)
+    if step <= 0:
+        raise ValueError(f"PointCloud2 has point_step {step}.")
+
+    raw = np.frombuffer(msg.data, dtype=np.uint8)
+    row_step = int(getattr(msg, "row_step", 0) or 0) or width * step
+    if row_step < width * step:
+        raise ValueError(
+            f"PointCloud2 row_step {row_step} is smaller than width * point_step "
+            f"({width} * {step})."
+        )
+    if len(raw) == height * row_step:
+        raw = raw.reshape(height, row_step)[:, : width * step]
+    elif len(raw) == n_pts * step:  # unpadded, whatever row_step says
+        pass
+    else:
+        raise ValueError(
+            f"PointCloud2 payload holds {len(raw)} byte(s) for {width} x {height} "
+            f"point(s) of {step} byte(s) (row_step {row_step}): truncated, or its "
+            f"header is wrong."
+        )
+    raw = np.ascontiguousarray(raw).reshape(n_pts, step)
 
     endian = ">" if msg.is_bigendian else "<"
-    raw = np.frombuffer(msg.data, dtype=np.uint8)
-    expected = n_pts * msg.point_step
-    if len(raw) != expected:
-        n_pts = len(raw) // msg.point_step
-        raw = raw[: n_pts * msg.point_step]
+    out = np.empty((n_pts, n_cols), dtype=out_dtype)
+    col = 0
+    for f, base, count in zip(fields, dtypes, counts, strict=True):
+        nb = base.itemsize
+        if f.offset + nb * count > step:
+            raise ValueError(
+                f"PointCloud2 field '{f.name}' (offset {f.offset}, {count} x "
+                f"{nb} byte(s)) does not fit in point_step {step}."
+            )
+        block = raw[:, f.offset : f.offset + nb * count]
+        values = np.ascontiguousarray(block).view(base.newbyteorder(endian))
+        out[:, col : col + count] = values.reshape(n_pts, count)
+        col += count
+    if not fields:
+        return np.zeros((n_pts, 3), dtype=np.float32)
+    return out
 
-    raw = raw.reshape(n_pts, msg.point_step)
-    cols = []
-    for f in msg.fields:
-        base_dt = np.dtype(_PC2_DTYPE.get(f.datatype, np.float32))
-        dt = base_dt.newbyteorder(endian)
-        nb = base_dt.itemsize
-        col = raw[:, f.offset : f.offset + nb]
-        col = col.reshape(-1, nb).view(dt).reshape(-1).astype(np.float32)
-        cols.append(col)
 
-    return np.column_stack(cols) if cols else np.zeros((n_pts, 3), dtype=np.float32)
+# Image encodings (sensor_msgs/image_encodings.h) -> (numpy dtype, channels).
+# Bayer patterns are stored as their single raw channel.
+_IMAGE_ENCODINGS: dict[str, tuple[type, int]] = {
+    "mono8": (np.uint8, 1), "8uc1": (np.uint8, 1), "8sc1": (np.int8, 1),
+    "mono16": (np.uint16, 1), "16uc1": (np.uint16, 1), "16sc1": (np.int16, 1),
+    "32sc1": (np.int32, 1), "32fc1": (np.float32, 1), "64fc1": (np.float64, 1),
+    "rgb8": (np.uint8, 3), "bgr8": (np.uint8, 3), "8uc3": (np.uint8, 3),
+    "rgba8": (np.uint8, 4), "bgra8": (np.uint8, 4), "8uc4": (np.uint8, 4),
+    "rgb16": (np.uint16, 3), "bgr16": (np.uint16, 3), "16uc3": (np.uint16, 3),
+    "rgba16": (np.uint16, 4), "bgra16": (np.uint16, 4), "16uc4": (np.uint16, 4),
+    "32fc3": (np.float32, 3), "32fc4": (np.float32, 4),
+    "8uc2": (np.uint8, 2), "16uc2": (np.uint16, 2), "32fc2": (np.float32, 2),
+    "yuv422": (np.uint8, 2), "yuv422_yuy2": (np.uint8, 2),
+    **{f"bayer_{p}{b}": (np.uint8 if b == "8" else np.uint16, 1)
+       for p in ("rggb", "bggr", "gbrg", "grbg") for b in ("8", "16")},
+}
 
 
 def _image(msg) -> np.ndarray:
-    data = np.frombuffer(msg.data, dtype=np.uint8)
-    channels = msg.step // msg.width if msg.width else 1
-    if channels <= 1:
-        return data.reshape(msg.height, msg.width)
-    img = data.reshape(msg.height, msg.width, channels)
-    # ROS colour topics are commonly published as bgr8/bgra8 (the cv_bridge /
-    # OpenCV default); honour the encoding so the stored array is canonical
-    # RGB(A). Ignoring it silently swapped red and blue for every downstream
-    # consumer — the classic "red sky, green plant" symptom in a viewer.
+    """An Image as ``(H, W)`` or ``(H, W, C)`` in the dtype its encoding names
+    (a 16UC1 depth stays uint16, a 32FC1 float32). Row padding
+    (``step > width * bytes per pixel``) is skipped, ``is_bigendian`` honoured,
+    and BGR(A) stored as RGB(A). An encoding that is not known is refused: its
+    bytes cannot be laid out by guessing."""
     enc = (getattr(msg, "encoding", "") or "").lower()
-    if enc == "bgr8":
-        img = np.ascontiguousarray(img[..., ::-1])
-    elif enc == "bgra8":
+    height, width, step = int(msg.height), int(msg.width), int(msg.step)
+    if enc not in _IMAGE_ENCODINGS:
+        raise ValueError(
+            f"Image encoding '{getattr(msg, 'encoding', '')}' is not one "
+            f"apairo_ros converts ({', '.join(sorted(_IMAGE_ENCODINGS))})."
+        )
+    base, channels = _IMAGE_ENCODINGS[enc]
+    dtype = np.dtype(base)
+    row_bytes = width * channels * dtype.itemsize
+    raw = np.frombuffer(msg.data, dtype=np.uint8)
+    if step < row_bytes or len(raw) != height * step:
+        raise ValueError(
+            f"Image '{enc}' {width} x {height} needs {row_bytes} byte(s) per row; "
+            f"got step {step} and {len(raw)} byte(s) for {height} row(s)."
+        )
+    rows = np.ascontiguousarray(raw.reshape(height, step)[:, :row_bytes])
+    endian = ">" if getattr(msg, "is_bigendian", 0) else "<"
+    img = rows.view(dtype.newbyteorder(endian)).astype(dtype, copy=False)
+    img = img.reshape(height, width) if channels == 1 else img.reshape(height, width, channels)
+    # ROS colour topics are commonly published as bgr8/bgra8 (the cv_bridge /
+    # OpenCV default); the stored array is canonical RGB(A).
+    if enc.startswith("bgra"):
         img = np.ascontiguousarray(img[..., [2, 1, 0, 3]])
-    return img
+    elif enc.startswith("bgr"):
+        img = np.ascontiguousarray(img[..., ::-1])
+    return np.ascontiguousarray(img)
 
 
 def _compressed_image(msg) -> np.ndarray:
+    """A CompressedImage decoded with Pillow. image_transport's
+    ``compressedDepth`` puts a 12-byte header before the PNG: it is skipped (a
+    16-bit PNG then gives the raw depth; a 32FC1 depth was quantised by the
+    publisher and is returned as stored)."""
+    import io
+
     try:
         from PIL import Image as PILImage
-        import io
-        return np.array(PILImage.open(io.BytesIO(bytes(msg.data))))
-    except ImportError:
-        return np.frombuffer(msg.data, dtype=np.uint8)
+    except ImportError as exc:
+        raise ImportError(
+            "Decoding a CompressedImage needs Pillow (pip install Pillow)."
+        ) from exc
+    data = bytes(msg.data)
+    fmt = (getattr(msg, "format", "") or "").lower()
+    if "compresseddepth" in fmt:
+        data = data[12:]
+    try:
+        return np.array(PILImage.open(io.BytesIO(data)))
+    except Exception as exc:
+        raise ValueError(
+            f"CompressedImage (format '{getattr(msg, 'format', '')}') could not "
+            f"be decoded: {exc}"
+        ) from exc
+
+
+def _pointcloud(msg) -> np.ndarray:
+    """A sensor_msgs/PointCloud as ``(N, 3 + channels)`` float32: x, y, z, then
+    one column per channel (their values are float32 in the message)."""
+    xyz = np.array([[p.x, p.y, p.z] for p in msg.points], dtype=np.float32).reshape(-1, 3)
+    extra = [np.asarray(c.values, dtype=np.float32) for c in getattr(msg, "channels", [])]
+    for c in extra:
+        if len(c) != len(xyz):
+            raise ValueError(
+                f"PointCloud channel holds {len(c)} value(s) for {len(xyz)} point(s)."
+            )
+    return np.column_stack([xyz, *extra]) if extra else xyz
 
 
 def _laser_scan(msg) -> np.ndarray:

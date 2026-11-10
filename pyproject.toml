@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apairo-ros"
-version = "0.1.0"
+version = "0.1.1"
 description = "ROS for apairo: extract bags to an apairo dataset, or read them in place"
 readme = "README.md"
 authors = [

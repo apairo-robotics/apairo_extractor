@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import warnings
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -7,7 +9,13 @@ import numpy as np
 
 from apairo.core.config import register_raw_channel, register_static_transform
 
-from apairo_ros.bag import BagInfo, topic_to_dir, topics_in_bag
+from apairo_ros.bag import (
+    BagInfo,
+    colliding_channels,
+    sequence_name,
+    topic_to_dir,
+    topics_in_bag,
+)
 from apairo_ros.converters import (
     convert_message,
     is_frame_type,
@@ -31,16 +39,84 @@ def extract_bag(
         progress_cb: Optional callback(messages_done, messages_total).
 
     Returns:
-        (seq_dir, skipped_topics) where skipped_topics were missing or unsupported.
-    """
-    from rosbags.highlevel import AnyReader
+        (seq_dir, skipped_topics) where skipped_topics were missing or
+        unsupported. A topic some of whose messages could not be read is
+        listed too, with the count and the reason: its channel holds the
+        others.
 
-    seq_dir = output_dir / bag_info.path.stem
-    seq_dir.mkdir(parents=True, exist_ok=True)
+    Raises:
+        ValueError: The sequence directory would be the bag itself (a ROS 2
+            bag extracted into its own parent directory), or two selected
+            topics map to the same channel name.
+    """
+    seq_dir = output_dir / sequence_name(bag_info.path)
+    bag_real = bag_info.path.resolve()
+    if seq_dir.resolve() == bag_real or (
+        bag_real.is_dir() and bag_real in seq_dir.resolve().parents
+    ):
+        raise ValueError(
+            f"The output directory would put the sequence in the bag itself "
+            f"({seq_dir}): extracting would overwrite the bag's metadata.yaml. "
+            f"Choose an output directory other than the one holding the bag."
+        )
 
     bag_topic_names = topics_in_bag(bag_info)
     available = [t for t in topics if t in bag_topic_names]
     missing = [t for t in topics if t not in bag_topic_names]
+    clashes = colliding_channels(available)
+    if clashes:
+        detail = "; ".join(f"{', '.join(ts)} -> '{name}'" for name, ts in clashes.items())
+        raise ValueError(
+            f"Several topics would be written to the same channel directory "
+            f"({detail}). Extract them in separate runs."
+        )
+    created = not seq_dir.exists()
+    seq_dir.mkdir(parents=True, exist_ok=True)
+    # Channel directories this run writes: emptied of an earlier extraction's
+    # files first, and removed if the run fails.
+    started: list[Path] = []
+    dropped: dict[str, list] = {}  # topic -> [count, first reason]
+
+    def start_channel(channel_dir: Path) -> None:
+        if channel_dir in started:
+            return
+        channel_dir.mkdir(exist_ok=True)
+        for old in channel_dir.iterdir():
+            if old.is_file() and (
+                old.suffix == ".npy" or old.name in ("timestamps.txt", "metadata.yaml")
+            ):
+                old.unlink()
+        started.append(channel_dir)
+
+    def drop(topic: str, exc: Exception) -> None:
+        entry = dropped.setdefault(topic, [0, f"{type(exc).__name__}: {exc}"])
+        entry[0] += 1
+
+    try:
+        return _extract(
+            bag_info, seq_dir, available, missing, progress_cb, start_channel, drop,
+            dropped,
+        )
+    except BaseException:
+        # Nothing half-written stays: a later `init` would register it.
+        for channel_dir in started:
+            shutil.rmtree(channel_dir, ignore_errors=True)
+        if created and seq_dir.is_dir() and not any(seq_dir.iterdir()):
+            seq_dir.rmdir()
+        raise
+
+
+def _extract(
+    bag_info: BagInfo,
+    seq_dir: Path,
+    available: list[str],
+    missing: list[str],
+    progress_cb,
+    start_channel,
+    drop,
+    dropped: dict,
+) -> tuple[Path, list[str]]:
+    from rosbags.highlevel import AnyReader
 
     total = sum(t.msgcount for t in bag_info.topics if t.name in set(available))
 
@@ -79,7 +155,8 @@ def extract_bag(
             topic = conn.topic
             try:
                 msg = reader.deserialize(rawdata, conn.msgtype)
-            except Exception:
+            except Exception as exc:
+                drop(topic, exc)  # counted and reported, never silent
                 done += 1
                 if progress_cb and done % 50 == 0:
                     progress_cb(done, total)
@@ -103,12 +180,16 @@ def extract_bag(
                 fid = fid.strip() if isinstance(fid, str) else ""
                 frame_ids[topic] = fid[1:] if fid.startswith("/") else fid
 
-            arr = convert_message(msg, conn.msgtype)
+            try:
+                arr = convert_message(msg, conn.msgtype)
+            except ValueError as exc:  # a message that cannot be laid out
+                drop(topic, exc)
+                arr = None
             if arr is not None:
                 if is_frame_type(conn.msgtype):
                     channel_dir = seq_dir / topic_to_dir(topic)
                     if topic not in frame_counts:
-                        channel_dir.mkdir(exist_ok=True)
+                        start_channel(channel_dir)
                     idx = frame_counts.get(topic, 0)
                     np.save(channel_dir / f"{idx:06d}.npy", arr)
                     frame_counts[topic] = idx + 1
@@ -147,7 +228,7 @@ def extract_bag(
             register_raw_channel(seq_dir, dir_name, "npys", frame=frame_ids.get(topic) or None)
 
         elif topic in seq_data and seq_data[topic]:
-            channel_dir.mkdir(exist_ok=True)
+            start_channel(channel_dir)
             frames = seq_data[topic]
             timestamps = np.array([ts / 1e9 for ts, _ in frames])
             stacked = np.stack([arr for _, arr in frames])
@@ -159,10 +240,18 @@ def extract_bag(
         else:
             skipped.append(topic)
 
-    _write_tf_edges(seq_dir, tf_edges)
+    _write_tf_edges(seq_dir, tf_edges, start_channel)
     _write_tf_calibration(seq_dir, tf_static)
     skipped.extend(sorted(tf_topics - tf_produced))
-    _write_sequence_metadata(seq_dir, bag_info)
+    # Messages that could not be read, on topics that otherwise were: the
+    # channel is short of them, so say how many and why.
+    for topic, (count, reason) in sorted(dropped.items()):
+        if topic in skipped:
+            continue
+        note = f"{topic} ({count} message(s) could not be read: {reason})"
+        skipped.append(note)
+        warnings.warn(f"{bag_info.path.name}: {note}", UserWarning, stacklevel=3)
+    _write_sequence_metadata(seq_dir, bag_info, dropped)
 
     return seq_dir, skipped
 
@@ -203,13 +292,15 @@ def _accumulate_tf(msg, topic: str, edges: dict, static: dict, produced: set) ->
             edges.setdefault((topic, parent, child), []).append((t, pose))
 
 
-def _write_one_edge(seq_dir: Path, topic: str, parent: str, child: str, samples: list) -> None:
+def _write_one_edge(
+    seq_dir: Path, topic: str, parent: str, child: str, samples: list, start_channel
+) -> None:
     """Write one dynamic transform edge as a stacked pose channel."""
     if not samples:
         return
     dir_name = f"{topic_to_dir(topic)}__{parent}__{child}".replace("/", "_")
     channel_dir = seq_dir / dir_name
-    channel_dir.mkdir(exist_ok=True)
+    start_channel(channel_dir)
     samples = sorted(samples, key=lambda s: s[0])
     timestamps = np.array([t for t, _ in samples])
     stacked = np.stack([pose for _, pose in samples])
@@ -222,10 +313,20 @@ def _write_one_edge(seq_dir: Path, topic: str, parent: str, child: str, samples:
     })
 
 
-def _write_tf_edges(seq_dir: Path, edges: dict) -> None:
+def _write_tf_edges(seq_dir: Path, edges: dict, start_channel) -> None:
     """Flush every dynamic transform edge to its own pose channel (faithful)."""
+    names: dict[str, tuple] = {}
     for (topic, parent, child), samples in edges.items():
-        _write_one_edge(seq_dir, topic, parent, child, samples)
+        if not samples:
+            continue
+        dir_name = f"{topic_to_dir(topic)}__{parent}__{child}".replace("/", "_")
+        if dir_name in names:
+            raise ValueError(
+                f"Transform edges {names[dir_name]} and {(topic, parent, child)} "
+                f"would be written to the same channel '{dir_name}'."
+            )
+        names[dir_name] = (topic, parent, child)
+        _write_one_edge(seq_dir, topic, parent, child, samples, start_channel)
 
 
 def _pose7_to_matrix(pose) -> np.ndarray:
@@ -268,7 +369,9 @@ def _write_channel_metadata(
         yaml.dump(meta, f, default_flow_style=False)
 
 
-def _write_sequence_metadata(seq_dir: Path, bag_info: BagInfo) -> None:
+def _write_sequence_metadata(
+    seq_dir: Path, bag_info: BagInfo, dropped: dict | None = None
+) -> None:
     import yaml
     from apairo.core.config import config_exists, read_config
 
@@ -283,5 +386,10 @@ def _write_sequence_metadata(seq_dir: Path, bag_info: BagInfo) -> None:
         "message_count": bag_info.message_count,
         "channels": channels,
     }
+    if dropped:
+        meta["dropped_messages"] = {
+            topic: {"count": count, "reason": reason}
+            for topic, (count, reason) in sorted(dropped.items())
+        }
     with open(seq_dir / "metadata.yaml", "w") as f:
         yaml.dump(meta, f, default_flow_style=False)

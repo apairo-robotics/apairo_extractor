@@ -253,7 +253,7 @@ def _load_channel_npys(channel_dir: Path) -> list[np.ndarray]:
 def _load_channel_odom(channel_dir: Path, channel_cfg: dict) -> list[tuple[float, np.ndarray]]:
     """Load stacked odometry + timestamps.txt → list of (ts_s, array) pairs."""
     ts_path = channel_dir / "timestamps.txt"
-    timestamps = np.loadtxt(ts_path) if ts_path.exists() else None
+    timestamps = np.atleast_1d(np.loadtxt(ts_path)) if ts_path.exists() else None
 
     loader = channel_cfg.get("loader", "npy")
     if loader == "npy":
