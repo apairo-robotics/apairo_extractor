@@ -103,8 +103,59 @@ def test_buffers_stay_bounded():
     live = LiveSource(_deployed(msgs[:80]))
     for c, t, v in msgs:
         live.push(c, t, v)
-    assert len(live._t["lidar"]) == live.history == 2 * 2 + 2
+    assert live.history == 2 + 2
+    # One more than the frames kept: the message that asks for the next frame.
+    assert len(live._t["lidar"]) == live.history + 1
     assert len(live._t["imu"]) <= 4 * live.history
+
+
+def _score_by_time(frames):
+    return {frames[i].timestamp: frames[i].data["score"] for i in range(len(frames))}
+
+
+def test_a_window_reaches_across_frames_a_tolerance_left_unmatched():
+    # imu silent for 1.2 s: twelve lidar frames have no match within the
+    # tolerance. The first windows after the gap reach back across it, to the
+    # frames before; counting unmatched messages as history cut them short.
+    msgs = [m for m in _messages(n=40) if not (m[0] == "imu" and 1.0 < m[1] < 2.2)]
+    ds = (
+        _recording(msgs)
+        .synchronize(reference="lidar", method={"imu": "previous"}, tolerance=0.05)
+        .window(size=3, reduce=Stack())
+    )
+    deployed = ds.transform(Score(), in_place=False).inference("score")
+    offline = _score_by_time(deployed)
+
+    live = LiveSource(deployed)
+    seen = {}
+    for c, t, v in msgs:
+        frame = live.push(c, t, v)
+        if frame is not None:
+            seen[t] = frame.data["score"]
+
+    assert seen == offline
+    assert live.overflowed == 0
+
+
+def test_max_buffer_bounds_a_channel_that_stays_silent():
+    msgs = [m for m in _messages(n=200) if not (m[0] == "imu" and m[1] > 2.0)]
+    ds = (
+        _recording(msgs)
+        .synchronize(reference="lidar", method={"imu": "previous"}, tolerance=0.05)
+        .window(size=3, reduce=Stack())
+    )
+    deployed = ds.transform(Score(), in_place=False).inference("score")
+    live = LiveSource(deployed, max_buffer=16)
+    with pytest.warns(RuntimeWarning, match="max_buffer=16"):
+        for c, t, v in msgs:
+            live.push(c, t, v)
+    assert len(live._t["lidar"]) <= 16 + 1
+    assert live.overflowed > 0
+
+
+def test_a_history_shorter_than_the_windows_is_refused():
+    with pytest.raises(ValueError, match="shorter than the chain's windows"):
+        LiveSource(_deployed(_messages()), history=1)
 
 
 def test_a_non_causal_chain_is_refused():

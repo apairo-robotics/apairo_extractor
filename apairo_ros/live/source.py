@@ -30,9 +30,17 @@ class LiveSource:
     Args:
         chain: A :class:`apairo.Chain` (``load_chain(path)``) or the
             ``InferenceView`` returned by ``ds.inference(...)``.
-        history: How many reference frames to keep. Defaults to twice the
-            chain's ``lookback`` (its windows' reach) plus two, so a frame
-            dropped by a synchronization tolerance does not shorten a window.
+        history: How many of the chain's frames to keep behind the current
+            one. Defaults to the chain's ``lookback`` (its windows' reach)
+            plus two. It counts frames the chain *gives*: a reference message
+            that a synchronization tolerance leaves without a match is kept
+            for as long as a window may still reach across it, so a window is
+            the one the recorded chain builds.
+        max_buffer: Upper bound on buffered reference messages, whatever the
+            chain gave. Reached only when a channel stays silent for longer
+            than this many reference messages; the oldest are then dropped,
+            with a warning, and a window reaching that far differs from the
+            recorded one.
 
     Raises:
         ValueError: If the chain needs future events (it is not causal), or
@@ -48,7 +56,9 @@ class LiveSource:
                 publish(frame.data["trav_pred"])
     """
 
-    def __init__(self, chain: Any, *, history: int | None = None) -> None:
+    def __init__(
+        self, chain: Any, *, history: int | None = None, max_buffer: int = 1024
+    ) -> None:
         chain = getattr(chain, "chain", chain)  # an InferenceView carries its chain
         if not chain.causal:
             non_causal = [
@@ -65,10 +75,18 @@ class LiveSource:
         self._chain = chain
         self.reference: str | None = chain.reference
         self.channels: list[str] = sorted(set(channels) | {self.reference} - {None})
-        self.history = history if history is not None else 2 * chain.lookback + 2
+        self.history = history if history is not None else chain.lookback + 2
+        if self.history < chain.lookback + 1:
+            raise ValueError(
+                f"history={self.history} is shorter than the chain's windows, "
+                f"which reach {chain.lookback} frame(s) back."
+            )
+        self.max_buffer = max(int(max_buffer), self.history)
+        self.overflowed = 0  # reference messages dropped by max_buffer
         self._t: dict[str, list[float]] = {c: [] for c in self.channels}
         self._v: dict[str, list[Any]] = {c: [] for c in self.channels}
         self.late = 0  # messages older than the last one on their channel
+        self._spare = 0  # oldest reference messages the chain no longer needs
 
     @property
     def outputs(self) -> list[str]:
@@ -104,13 +122,16 @@ class LiveSource:
         self._v[channel].append(value)
         if self.reference is not None and channel != self.reference:
             return None
-        self._trim()
+        self._trim(self._spare)
         if any(not self._t[c] for c in self.channels):
             return None
         source = StreamDataset(
             {c: (np.asarray(self._t[c]), list(self._v[c])) for c in self.channels}
         )
         frames = self._chain.on(source)
+        # Each oldest reference message gives at most one frame: this many
+        # can go before the next message and still leave ``history`` frames.
+        self._spare = max(len(frames) - self.history, 0)
         if len(frames) == 0:
             return None
         frame = frames[len(frames) - 1]
@@ -118,17 +139,31 @@ class LiveSource:
             return None  # the chain gives no frame at this instant
         return frame
 
-    def _trim(self) -> None:
-        """Keep the last ``history`` reference frames, and on every other
-        channel what they can match: the messages since the oldest kept frame,
-        plus the one just before it (``"previous"`` matching)."""
+    def _trim(self, spare: int) -> None:
+        """Drop the *spare* oldest reference messages -- those the chain's
+        last ``history`` frames do not need -- and on every other channel keep
+        what the remaining ones can match: the messages since the oldest kept
+        reference, plus the one just before it (``"previous"`` matching)."""
         if self.reference is None:
             for c in self.channels:
                 del self._t[c][: -self.history], self._v[c][: -self.history]
             return
         ref = self._t[self.reference]
-        if len(ref) > self.history:
-            cut = len(ref) - self.history
+        cut = min(spare, len(ref) - 1)
+        over = len(ref) - cut - self.max_buffer
+        if over > 0:
+            cut += over
+            if not self.overflowed:
+                warnings.warn(
+                    f"LiveSource holds more than max_buffer={self.max_buffer} "
+                    f"messages of {self.reference!r} without the chain giving "
+                    f"{self.history} frames (a channel is silent, or outside "
+                    f"the synchronization tolerance): the oldest are dropped.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+            self.overflowed += over
+        if cut > 0:
             del ref[:cut], self._v[self.reference][:cut]
         oldest = ref[0]
         for c in self.channels:
