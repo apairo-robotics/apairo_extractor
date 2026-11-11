@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
-from apairo_ros.bag import BagInfo, topic_to_dir
+from apairo_ros.bag import BagInfo, colliding_sequences, sequence_name, topic_to_dir
 from apairo_ros.export_mnt import MntExportConfig, export_to_mnt, extract_bag_to_mnt
 from apairo_ros.extract import extract_bag
 from apairo_ros.preprocess import PreprocessConfig, run_preprocessors
@@ -103,7 +103,7 @@ def _do_bag(
     The single source of truth for per-bag work, shared by the sequential and
     parallel paths — only ``report`` differs between them.
     """
-    mission_dir = mnt_config.output_dir / bag.path.stem if mnt_config else None
+    mission_dir = mnt_config.output_dir / sequence_name(bag.path) if mnt_config else None
     skipped: list[str] = []
 
     if mnt_only:
@@ -157,7 +157,7 @@ def _extract_one_bag_worker(args) -> BagResult:
     (bag, topics, preprocess_configs, output_dir, mnt_config,
      mnt_only, mnt_points_topic, mnt_image_topic, mnt_odom_topic, q) = args
 
-    bag_id = bag.path.stem
+    bag_id = sequence_name(bag.path)
 
     def report(phase: str, done: int, total: int) -> None:
         q.put((bag_id, phase, done, total))
@@ -221,6 +221,18 @@ def run_extraction(
     """
     preprocess_configs = list(preprocess_configs)
     mnt_only = output_dir is None
+    # Two bags extracted to one sequence would mix their frames (and, in
+    # parallel, write the same files at once): refuse before anything is read.
+    clashes = colliding_sequences([bag.path for bag in bags])
+    if clashes:
+        detail = "; ".join(
+            f"'{name}': {', '.join(str(p) for p in paths)}"
+            for name, paths in sorted(clashes.items())
+        )
+        raise ValueError(
+            f"Several bags would be extracted to the same sequence ({detail}). "
+            f"Extract them into separate output directories, or rename one."
+        )
     if not mnt_only:
         output_dir.mkdir(parents=True, exist_ok=True)
     if mnt_config is not None:
@@ -248,7 +260,7 @@ def run_extraction(
 
     if workers <= 1:
         for bag in bags:
-            bag_id = bag.path.stem
+            bag_id = sequence_name(bag.path)
             try:
                 skipped = _do_bag(
                     bag, *bag_args,

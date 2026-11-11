@@ -29,7 +29,7 @@ from apairo_ros.export_mnt import MntExportConfig
 from apairo_ros.extract import extract_bag
 from apairo_ros.runner import resolve_workers, run_extraction
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "BagDataset",

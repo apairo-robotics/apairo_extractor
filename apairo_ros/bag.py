@@ -216,8 +216,36 @@ def find_bags(directory: Path) -> list[Path]:
 
 
 def topic_to_dir(topic: str) -> str:
-    """'/ouster/points' → 'ouster_points'"""
-    return topic.lstrip("/").replace("/", "_") or "unknown"
+    """'/ouster/points' → 'ouster_points'. The result is a single directory
+    name: a topic made of dots only (``/..``) would name the parent directory
+    and is refused."""
+    name = topic.lstrip("/").replace("/", "_").replace("\\", "_") or "unknown"
+    if not name.strip("."):
+        raise ValueError(f"Topic {topic!r} cannot be a channel name.")
+    return name
+
+
+def sequence_name(bag_path: Path) -> str:
+    """The sequence a bag is extracted to: a ROS 1 ``.bag`` file gives its
+    stem, a ROS 2 bag directory its whole name (``run_1.0`` and ``run_1.1`` are
+    two bags, which a stem would merge)."""
+    return bag_path.name if bag_path.is_dir() else bag_path.stem
+
+
+def colliding_sequences(bag_paths: list[Path]) -> dict[str, list[Path]]:
+    """Sequence names that several of *bag_paths* would be written to."""
+    by_name: dict[str, list[Path]] = {}
+    for path in bag_paths:
+        by_name.setdefault(sequence_name(path), []).append(path)
+    return {name: paths for name, paths in by_name.items() if len(paths) > 1}
+
+
+def colliding_channels(topics: list[str]) -> dict[str, list[str]]:
+    """Channel names that several of *topics* map to (``/a/b`` and ``/a_b``)."""
+    by_dir: dict[str, list[str]] = {}
+    for topic in topics:
+        by_dir.setdefault(topic_to_dir(topic), []).append(topic)
+    return {name: ts for name, ts in by_dir.items() if len(ts) > 1}
 
 
 def compute_topic_coverage(bags: list[BagInfo]) -> tuple[list[str], list[str]]:

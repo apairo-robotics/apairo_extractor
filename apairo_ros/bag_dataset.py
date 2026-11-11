@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 from apairo.dataset.stream import StreamDataset
 
-from apairo_ros.bag import topic_to_dir
+from apairo_ros.bag import colliding_channels, topic_to_dir
 from apairo_ros.converters import (
     convert_message,
     is_supported_msgtype,
@@ -98,22 +98,45 @@ class BagDataset(StreamDataset):
             for conn in reader.connections:
                 msgtypes.setdefault(conn.topic, conn.msgtype)
             channels = self._resolve_topics(topics, msgtypes, path)
-            by_topic = {topic: channel for channel, topic in channels.items()}
+            # One topic may be read under several channel names.
+            by_topic: dict[str, list[str]] = {}
+            for channel, topic in channels.items():
+                by_topic.setdefault(topic, []).append(channel)
             conns = [c for c in reader.connections if c.topic in by_topic]
 
             stamps: dict[str, list[float]] = {c: [] for c in channels}
             items: dict[str, list[np.ndarray]] = {c: [] for c in channels}
+            dropped: dict[str, list] = {}  # topic -> [count, first reason]
             for conn, t_ns, raw in reader.messages(connections=conns):
-                msg = reader.deserialize(raw, conn.msgtype)
-                arr = convert_message(msg, conn.msgtype)
+                # A message that cannot be read is counted and reported, as an
+                # extraction does: the two give the same samples.
+                try:
+                    msg = reader.deserialize(raw, conn.msgtype)
+                    arr = convert_message(msg, conn.msgtype)
+                except Exception as exc:
+                    entry = dropped.setdefault(
+                        conn.topic, [0, f"{type(exc).__name__}: {exc}"]
+                    )
+                    entry[0] += 1
+                    continue
                 if arr is None:
                     continue
                 t = t_ns / 1e9
                 if stamp == "header":
-                    t = _header_stamp(msg) or t
-                channel = by_topic[conn.topic]
-                stamps[channel].append(t)
-                items[channel].append(arr)
+                    # The header's time when there is a header, a zero stamp
+                    # included: the live node reads it the same way.
+                    header_t = _header_stamp(msg)
+                    t = t if header_t is None else header_t
+                for channel in by_topic[conn.topic]:
+                    stamps[channel].append(t)
+                    items[channel].append(arr)
+            for topic, (count, reason) in sorted(dropped.items()):
+                warnings.warn(
+                    f"{path.name}: {count} message(s) on {topic} could not be "
+                    f"read ({reason}); the channel holds the others.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         empty = [f"{c} ({channels[c]})" for c in channels if not items[c]]
         if empty:
@@ -131,6 +154,22 @@ class BagDataset(StreamDataset):
 
     @staticmethod
     def _resolve_topics(topics, msgtypes: dict[str, str], path: Path) -> dict[str, str]:
+        if topics is None or isinstance(topics, list):
+            named = (
+                [t for t, mt in msgtypes.items() if is_supported_msgtype(mt)]
+                if topics is None
+                else [t for t in topics if t in msgtypes]
+            )
+            clashes = colliding_channels(named)
+            if clashes:
+                detail = "; ".join(
+                    f"{', '.join(ts)} -> '{name}'" for name, ts in clashes.items()
+                )
+                raise ValueError(
+                    f"Several topics of {path} would get the same channel name "
+                    f"({detail}). Name the channels yourself: "
+                    f"topics={{channel: topic}}."
+                )
         if topics is None:
             chosen = {
                 topic_to_dir(t): t
