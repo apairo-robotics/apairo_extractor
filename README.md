@@ -166,11 +166,22 @@ same recording gives, with the same message order.
 (`source /opt/ros/<distro>/setup.bash`), and `ChainNode` only uses the node
 it is given.
 
-**Status.** Tested without ROS: `LiveSource` against the offline chain, and
-`ChainNode` on a fake node fed a real ROS 2 bag's messages, against
-`BagDataset` on the same bag. Not yet tested in a running ROS 2 system
-(`ros2 bag play` into the node). Calibration from `/tf_static` is not read
-yet. Each frame re-runs the chain over the kept history: fine for short
+**Status.** Tested without ROS (`LiveSource` against the offline chain,
+`ChainNode` on a fake node fed a bag's messages) and in a running ROS 2
+system: ROS 2 Jazzy, `ros2 bag play --clock 100` of 60 s of a robot's
+`/imu/data` (25 Hz) and `/odometry/filtered/local`, into `ChainNode` with
+`use_sim_time`, a `synchronize` + `window` + scoring chain loaded with
+`load_chain`. With `stamp="receive"`, the node gave 1,492 of the 1,500 frames
+`BagDataset` gives offline, each within 11 ms of its offline stamp (the 100 Hz
+simulated clock), and 98.3% of them identical to the bit, 99.9% within 0.1%.
+
+`stamp="header"` cannot match offline when a source arrives late after its
+own stamp: there the odometry arrived 36 ms after its header, so for 1,141 of
+the 1,500 IMU frames the odometry that precedes them by header had not
+arrived yet; live and offline then pair different messages. Use
+`stamp="receive"` for a parity check against a recording.
+
+Calibration from `/tf_static` is not read yet. Each frame re-runs the chain over the kept history: fine for short
 windows, an incremental evaluation is planned for high rates.
 
 ## CLI
